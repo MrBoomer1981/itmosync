@@ -278,6 +278,7 @@ X-ITMO-HASH = sha1(content_key.encode()).hexdigest()[:16]
 | `TRANSP` | `OPAQUE` |
 | `X-ITMO-HASH` | См. раздел 8 |
 | `X-ITMO-SOURCE` | `my.itmo` |
+| `X-ITMO-TEACHER` | Преподаватель, если известен. Нужен, чтобы отчёт мог сказать «преподаватель изменён»: `DESCRIPTION` — свободный текст и обратно не разбирается |
 | `VALARM` | Только если `reminder_minutes > 0`. По умолчанию отсутствует |
 
 В календарь пишется корректный VTIMEZONE для Europe/Moscow.
