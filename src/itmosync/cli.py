@@ -7,6 +7,7 @@ no domain logic: if something here starts deciding what a lesson is, it belongs 
 from __future__ import annotations
 
 import getpass
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -20,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 
 from itmosync.config import DEFAULT_CONFIG_PATH, load_config, render_config, write_config
-from itmosync.errors import CalendarNotFoundError, ItmosyncError
+from itmosync.errors import CalendarNotFoundError, ConfigError, ItmosyncError
 from itmosync.ical.icloud import ICloudCalendar, OwnedEvent
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
 from itmosync.itmo.client import ItmoClient
@@ -87,6 +88,45 @@ def _read_secret(prompt: str) -> str:
     return sys.stdin.read()
 
 
+def _read_clipboard() -> str:
+    result = subprocess.run(["pbpaste"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise ConfigError("Не удалось прочитать буфер обмена (pbpaste).")
+    return result.stdout
+
+
+def _clear_clipboard() -> None:
+    subprocess.run(["pbcopy"], input="", text=True, check=False)
+
+
+# Reads one cookie and copies it; it sends nothing anywhere. Kept on one line because a
+# bookmarklet has to survive being pasted into a browser's URL field.
+BOOKMARKLET = (
+    "javascript:(function(){"
+    "var m=document.cookie.match(/auth\\._refresh_token\\.itmoId=([^;]*)/);"
+    "if(!m){alert('Токен не найден. Откройте my.itmo.ru и войдите в личный кабинет.');return;}"
+    "navigator.clipboard.writeText(decodeURIComponent(m[1])).then(function(){"
+    "alert('Токен скопирован.\\n\\nТеперь в терминале:\\n"
+    "itmosync auth --set-token --from-clipboard');"
+    "}).catch(function(){alert('Браузер не дал доступ к буферу обмена.');});"
+    "})()"
+)
+
+
+def _print_bookmarklet() -> None:
+    console.print("[bold]Закладка для получения токена[/bold]\n")
+    console.print("1. Создайте в браузере новую закладку (⌘D, затем «Изменить»)")
+    console.print("2. Назовите её, например, «Токен ИТМО»")
+    console.print("3. В поле адреса вставьте строку ниже целиком:\n")
+    console.print(BOOKMARKLET, style="cyan", soft_wrap=True)
+    console.print("\n4. Откройте my.itmo.ru, войдите и нажмите закладку")
+    console.print("5. Выполните: [bold]itmosync auth --set-token --from-clipboard[/bold]")
+    console.print(
+        "\n[dim]Закладка читает одну cookie и кладёт её в буфер обмена. "
+        "Никуда ничего не отправляет.[/dim]"
+    )
+
+
 @app.command(help="Создать конфиг с настройками по умолчанию.")
 def init(
     config_path: ConfigOption = DEFAULT_CONFIG_PATH,
@@ -121,20 +161,40 @@ def auth(
         bool,
         typer.Option("--set-apple-password", help="Пароль приложения Apple ID (ввод из stdin)."),
     ] = False,
+    bookmarklet: Annotated[
+        bool,
+        typer.Option("--bookmarklet", help="Показать закладку, копирующую токен в буфер обмена."),
+    ] = False,
+    from_clipboard: Annotated[
+        bool,
+        typer.Option("--from-clipboard", help="Взять секрет из буфера обмена, а не из stdin."),
+    ] = False,
 ) -> None:
-    if set_token == set_apple_password:
-        console.print("Укажите ровно один флаг: --set-token или --set-apple-password")
+    if sum((set_token, set_apple_password, bookmarklet)) != 1:
+        console.print(
+            "Укажите ровно один флаг: --set-token, --set-apple-password или --bookmarklet"
+        )
         raise typer.Exit(code=2)
+
+    if bookmarklet:
+        _print_bookmarklet()
+        return
 
     store = SecretStore()
 
     if set_token:
-        token = normalize_refresh_token(_read_secret("Refresh-токен my.itmo: "))
+        raw = _read_clipboard() if from_clipboard else _read_secret("Refresh-токен my.itmo: ")
+        token = normalize_refresh_token(raw)
         store.set_refresh_token(token)
         console.print("[green]✓[/green] Токен сохранён в связке ключей, проверяю обмен…")
         with Authenticator(store) as authenticator:
             authenticator.refresh()
         console.print("[green]✓[/green] ITMO ID принял токен")
+        if from_clipboard:
+            # The token is a live credential; leaving it in the clipboard for the next
+            # accidental ⌘V is a needless risk.
+            _clear_clipboard()
+            console.print("[dim]Буфер обмена очищен.[/dim]")
         return
 
     password = _read_secret("Пароль приложения Apple ID: ").strip()
