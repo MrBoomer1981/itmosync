@@ -21,7 +21,7 @@ from rich.table import Table
 
 from itmosync.config import DEFAULT_CONFIG_PATH, load_config, render_config, write_config
 from itmosync.errors import CalendarNotFoundError, ItmosyncError
-from itmosync.ical.icloud import ICloudCalendar
+from itmosync.ical.icloud import ICloudCalendar, OwnedEvent
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
 from itmosync.itmo.client import ItmoClient
 from itmosync.itmo.schedule import parse_schedule
@@ -283,8 +283,20 @@ def sync(
 
     with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
         calendar.connect()
-        calendar.open_calendar(create=not dry_run)
-        existing = calendar.list_owned(start, end)
+        existing: dict[str, OwnedEvent] = {}
+        try:
+            # A dry run must not create anything, not even the calendar — and the very first
+            # run is supposed to be a dry run, so a missing calendar is expected here.
+            calendar.open_calendar(create=not dry_run)
+        except CalendarNotFoundError:
+            if not dry_run:
+                raise
+            console.print(
+                f"[yellow]Календаря «{config.calendar.name}» ещё нет — "
+                "он будет создан при реальном запуске.[/yellow]\n"
+            )
+        else:
+            existing = calendar.list_owned(start, end)
 
         plan = build_plan(lessons, existing, start=start, end=end)
         check_guards(plan, config, force=force)
