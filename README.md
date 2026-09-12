@@ -85,8 +85,14 @@ A run prints what it did:
 
 ## When the token expires
 
-After about a month `itmosync` will stop with a message that prints the exact console
-snippet to run. Repeat the refresh-token step above; nothing else needs to change.
+`itmosync` will stop with a message that prints the exact console snippet to run. Repeat the
+refresh-token step above; nothing else needs to change.
+
+The nominal lifetime is about 30 days, but it can end sooner: ITMO ID rotates the refresh
+token on every exchange, so only one holder can be valid at a time. If your browser session
+on my.itmo refreshes itself, the token stored for `itmosync` stops working, and vice versa.
+That is not a bug to work around — just take a fresh token when it happens. For the same
+reason, do not run two syncs at once.
 
 ## What it will not do
 

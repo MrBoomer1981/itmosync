@@ -142,9 +142,9 @@ decodeURIComponent(document.cookie.split('auth._refresh_token.itmoId=')[1].split
 `auth --set-token` should still strip a leading `Bearer ` defensively, in case a user pastes the
 access-token cookie by mistake, and should reject a value that is not a three-part JWT.
 
-### Refresh exchange — NOT yet verified live
+### Refresh exchange — verified live on 2026-09-12
 
-Expected, from the Keycloak discovery document:
+Confirmed against the real endpoint:
 
 ```
 POST https://id.itmo.ru/auth/realms/itmo/protocol/openid-connect/token
@@ -156,10 +156,20 @@ grant_type=refresh_token&client_id=student-personal-cabinet&refresh_token=<token
 Expected response fields: `access_token`, `expires_in`, `refresh_token`, `refresh_expires_in`,
 `token_type`, `scope`.
 
-This exchange was deliberately **not** executed during reconnaissance: Keycloak may rotate the
-refresh token, which would have invalidated the browser session. Verify it at step 3, and confirm
-there whether a rotated `refresh_token` comes back — if it does, it must be written straight back
-into the Keychain.
+**The refresh token rotates on every exchange.** Measured by hashing the stored token before
+and after a single `refresh()`: the value changes every time, and the previous one stops
+working immediately. Writing the rotated token straight back into the Keychain is therefore
+not a nicety — without it the *second* run of itmosync would fail, long after the run that
+caused it.
+
+Two consequences worth knowing:
+
+- Only one holder of the token can exist at a time. If the my.itmo tab in a browser refreshes
+  its own session, the token stored for itmosync is invalidated, and vice versa. A token can
+  therefore die well before its nominal 30 days if the same account is actively used in a
+  browser. The fix is simply to take a fresh one.
+- Two concurrent itmosync runs would fight over the token. There is no locking; do not run
+  the tool twice at once.
 
 ## Other endpoints seen
 
