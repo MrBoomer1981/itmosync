@@ -13,7 +13,7 @@ import pytest
 import respx
 
 from itmosync.errors import AuthError, RateLimitError, TokenExpiredError, TokenRejectedError
-from itmosync.itmo import auth as auth_module
+from itmosync.itmo import client as client_module
 from itmosync.itmo.auth import (
     KEY_REFRESH_TOKEN,
     KEYRING_SERVICE,
@@ -47,7 +47,7 @@ def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[tuple[str, st
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the backoff instant; the delays themselves are not under test."""
-    monkeypatch.setattr(auth_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(client_module.time, "sleep", lambda _seconds: None)
 
 
 @pytest.fixture

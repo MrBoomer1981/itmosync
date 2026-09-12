@@ -10,7 +10,6 @@ it would add a second secret at rest in exchange for nothing.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -25,6 +24,7 @@ from itmosync.errors import (
     TokenExpiredError,
     TokenRejectedError,
 )
+from itmosync.itmo.client import request_with_retries
 from itmosync.logging import get_logger
 
 # ITMO ID, not my.itmo: the rule that my.itmo URLs live only in client.py does not apply.
@@ -36,8 +36,6 @@ KEY_REFRESH_TOKEN: Final = "itmo_refresh_token"
 KEY_APPLE_PASSWORD: Final = "apple_app_password"
 
 TIMEOUT: Final = 15.0
-MAX_ATTEMPTS: Final = 3
-BACKOFF_BASE: Final = 0.5
 # Refresh a little early so a token cannot expire between the check and the request.
 EXPIRY_MARGIN: Final = timedelta(seconds=60)
 
@@ -163,31 +161,16 @@ class Authenticator:
         return token
 
     def _post(self, data: dict[str, str]) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                response = self._client.post(TOKEN_URL, data=data)
-            except httpx.HTTPError as exc:
-                last_error = exc
-                _log.debug("сеть недоступна (попытка %s/%s): %s", attempt, MAX_ATTEMPTS, exc)
-            else:
-                if response.status_code < 400:
-                    return self._parse(response)
-                if response.status_code < 500:
-                    raise self._client_error(response)
-                last_error = ItmoApiError(f"ITMO ID ответил {response.status_code}")
-                _log.debug(
-                    "ITMO ID ответил %s (попытка %s/%s)",
-                    response.status_code,
-                    attempt,
-                    MAX_ATTEMPTS,
-                )
-            if attempt < MAX_ATTEMPTS:
-                time.sleep(BACKOFF_BASE * 2 ** (attempt - 1))
-
-        raise AuthError(
-            f"ITMO ID недоступен после {MAX_ATTEMPTS} попыток: {last_error}"
-        ) from last_error
+        response = request_with_retries(
+            self._client,
+            "POST",
+            TOKEN_URL,
+            data=data,
+            error_factory=lambda detail: AuthError(f"ITMO ID недоступен {detail}"),
+        )
+        if response.status_code >= 400:
+            raise self._client_error(response)
+        return self._parse(response)
 
     @staticmethod
     def _parse(response: httpx.Response) -> dict[str, Any]:

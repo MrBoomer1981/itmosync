@@ -10,16 +10,19 @@ import getpass
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from itmosync.config import DEFAULT_CONFIG_PATH, load_config, render_config, write_config
 from itmosync.errors import ItmosyncError
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
+from itmosync.itmo.client import ItmoClient
+from itmosync.itmo.schedule import parse_schedule
 from itmosync.logging import setup_logging
 
 app = typer.Typer(
@@ -29,6 +32,8 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+_WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 ConfigOption = Annotated[Path, typer.Option("--config", help="Путь к конфигу.")]
 
@@ -165,6 +170,61 @@ def doctor(
         checks.append(_check("Refresh-токен обменивается", exchange_token))
 
     raise typer.Exit(code=_print_checks(checks))
+
+
+@app.command(help="Показать расписание таблицей, в календарь ничего не пишет.")
+def show(
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+    days: Annotated[
+        int | None, typer.Option("--days", help="Сколько дней показать, начиная с сегодня.")
+    ] = None,
+    week: Annotated[bool, typer.Option("--week", help="Ближайшая неделя (7 дней).")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Подробный лог.")] = False,
+) -> None:
+    setup_logging(verbose=verbose)
+    config = load_config(config_path)
+
+    span = 7 if week else (days if days is not None else config.sync.window_days)
+    start = datetime.now(config.tz).date()
+    end = start + timedelta(days=span - 1)
+
+    with Authenticator() as authenticator, ItmoClient(authenticator) as client:
+        payload = client.fetch_schedule(start, end)
+    lessons = parse_schedule(payload, config.lesson_types)
+
+    if not lessons:
+        console.print(f"Занятий с {start:%d.%m} по {end:%d.%m} нет.")
+        return
+
+    table = Table(title=f"Расписание {start:%d.%m} – {end:%d.%m}", title_style="bold")
+    table.add_column("Дата")
+    table.add_column("Время")
+    table.add_column("Предмет")
+    table.add_column("Тип")
+    table.add_column("Место")
+    table.add_column("Преподаватель")
+
+    previous: date | None = None
+    for lesson in sorted(lessons, key=lambda item: (item.date, item.start)):
+        if previous is not None and lesson.date != previous:
+            table.add_section()
+        previous = lesson.date
+        place = (
+            "онлайн"
+            if lesson.is_online
+            else ", ".join(part for part in (lesson.room, lesson.building) if part)
+        )
+        table.add_row(
+            f"{lesson.date:%d.%m} {_WEEKDAYS[lesson.date.weekday()]}",
+            f"{lesson.start:%H:%M}–{lesson.end:%H:%M}",
+            lesson.subject,
+            lesson.label,
+            place,
+            lesson.teacher or "",
+        )
+
+    console.print(table)
+    console.print(f"Всего занятий: [bold]{len(lessons)}[/bold]")
 
 
 def main() -> None:

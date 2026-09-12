@@ -205,7 +205,9 @@ class Lesson:
     start: datetime.time
     end: datetime.time
     subject: str
-    type: LessonType
+    type: LessonType           # канонический тип, OTHER для неизвестных
+    label: str                 # короткая метка: значение из [lesson_types] либо
+                               # первое слово исходной строки
     raw_type: str              # исходная строка из API, как есть
     teacher: str | None
     room: str | None
@@ -230,9 +232,15 @@ class Lesson:
 ### UID — якорь события, меняется редко
 
 ```python
-uid_key = f"{date:%Y-%m-%d}|{normalize(subject)}|{type.value}|{index}"
+uid_key = f"{date:%Y-%m-%d}|{normalize(subject)}|{label}|{index}"
 UID = f"itmo-lesson-{sha1(uid_key.encode()).hexdigest()[:16]}@itmosync"
 ```
+
+В ключ идёт `label`, а не `type.value`: все неизвестные типы дают `LessonType.OTHER`, и
+на `type.value` две разные незнакомые пары по одному предмету в один день схлопнулись бы
+в один UID. По той же причине `index` считается по ключу (дата, `normalize(subject)`,
+`label`) — ключ индекса обязан совпадать с ключом UID, иначе индекс не выполняет свою
+работу.
 
 `normalize()` — нижний регистр, схлопывание пробелов, удаление кавычек и
 концевой пунктуации.
