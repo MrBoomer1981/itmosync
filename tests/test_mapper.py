@@ -175,3 +175,25 @@ def test_hash_is_stable_across_identical_lessons(lessons: list[Lesson]) -> None:
 
     assert content_hash(twin) == content_hash(lesson)
     assert uid_for(twin) == uid_for(lesson)
+
+
+def test_summary_and_location_without_a_room(lessons: list[Lesson], config: Config) -> None:
+    from dataclasses import replace
+
+    lesson = replace(lessons[0], room=None)
+
+    event = to_vevent(lesson, config, synced_at=SYNCED_AT)
+
+    assert value(event, "summary") == "Алгоритмы и структуры данных · лаб"
+    assert value(event, "location") == "ул.Ломоносова, д.9, лит. Б"
+
+
+def test_location_is_omitted_when_nothing_is_known(lessons: list[Lesson], config: Config) -> None:
+    from dataclasses import replace
+
+    lesson = replace(lessons[0], room=None, building=None)
+
+    event = to_vevent(lesson, config, synced_at=SYNCED_AT)
+
+    assert "location" not in event
+    assert value(event, "summary") == "Алгоритмы и структуры данных · лаб"

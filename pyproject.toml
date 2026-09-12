@@ -64,4 +64,6 @@ source = ["itmosync"]
 branch = true
 
 [tool.coverage.report]
+# The spec requires >=90% on the core: sync.py and ical/mapper.py.
+fail_under = 90
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

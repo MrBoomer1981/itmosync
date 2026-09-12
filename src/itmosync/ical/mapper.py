@@ -31,6 +31,8 @@ CATEGORY: Final = "ИТМО"
 SOURCE: Final = "my.itmo"
 HASH_PROPERTY: Final = "X-ITMO-HASH"
 SOURCE_PROPERTY: Final = "X-ITMO-SOURCE"
+# Kept so a sync report can say *what* changed; DESCRIPTION is prose and not parseable.
+TEACHER_PROPERTY: Final = "X-ITMO-TEACHER"
 
 
 def is_owned_uid(uid: str) -> bool:
@@ -125,6 +127,8 @@ def to_vevent(lesson: Lesson, config: Config, *, synced_at: dt.datetime | None =
     event.add("transp", "OPAQUE")
     event.add(HASH_PROPERTY, content_hash(lesson))
     event.add(SOURCE_PROPERTY, SOURCE)
+    if lesson.teacher:
+        event.add(TEACHER_PROPERTY, lesson.teacher)
 
     location = location_for(lesson, online_link_in_location=config.sync.online_link_in_location)
     if location:

@@ -19,7 +19,12 @@ from icalendar import Event
 
 from itmosync.config import Config
 from itmosync.errors import CalDavAuthError, CalendarError, CalendarNotFoundError
-from itmosync.ical.mapper import HASH_PROPERTY, is_owned_uid, to_calendar
+from itmosync.ical.mapper import (
+    HASH_PROPERTY,
+    TEACHER_PROPERTY,
+    is_owned_uid,
+    to_calendar,
+)
 from itmosync.logging import get_logger
 
 _log = get_logger()
@@ -27,10 +32,19 @@ _log = get_logger()
 
 @dataclass(frozen=True, slots=True)
 class OwnedEvent:
-    """An event in the calendar that itmosync created."""
+    """An event in the calendar that itmosync created.
+
+    Carries enough of the previous content for the report to say what actually changed —
+    without it, an update could only be announced as "изменилось что-то".
+    """
 
     uid: str
     content_hash: str
+    summary: str = ""
+    start: dt.datetime | None = None
+    end: dt.datetime | None = None
+    location: str = ""
+    teacher: str = ""
     sequence: int = 0
     created: dt.datetime | None = None
 
@@ -168,9 +182,16 @@ class ICloudCalendar:
                 return None
             sequence = component.get("sequence")
             created = component.get("created")
+            start = component.get("dtstart")
+            end = component.get("dtend")
             return OwnedEvent(
                 uid=uid,
                 content_hash=str(component.get(HASH_PROPERTY, "")),
+                summary=str(component.get("summary", "")),
+                start=start.dt if start is not None else None,
+                end=end.dt if end is not None else None,
+                location=str(component.get("location", "")),
+                teacher=str(component.get(TEACHER_PROPERTY, "")),
                 sequence=int(sequence) if sequence is not None else 0,
                 created=created.dt if created is not None else None,
             )

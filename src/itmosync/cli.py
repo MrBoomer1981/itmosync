@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import getpass
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -25,6 +26,8 @@ from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_tok
 from itmosync.itmo.client import ItmoClient
 from itmosync.itmo.schedule import parse_schedule
 from itmosync.logging import setup_logging
+from itmosync.report import render
+from itmosync.sync import apply_plan, build_plan, check_guards
 
 app = typer.Typer(
     name="itmosync",
@@ -252,6 +255,48 @@ def show(
 
     console.print(table)
     console.print(f"Всего занятий: [bold]{len(lessons)}[/bold]")
+
+
+@app.command(help="Синхронизировать расписание с календарём iCloud.")
+def sync(
+    config_path: ConfigOption = DEFAULT_CONFIG_PATH,
+    days: Annotated[
+        int | None, typer.Option("--days", help="Горизонт в днях вместо значения из конфига.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Показать план, ничего не записывая.")
+    ] = False,
+    force: Annotated[bool, typer.Option("--force", help="Отключить предохранители.")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Подробный лог.")] = False,
+) -> None:
+    setup_logging(verbose=verbose)
+    config = load_config(config_path)
+
+    span = days if days is not None else config.sync.window_days
+    start = datetime.now(config.tz).date()
+    end = start + timedelta(days=span - 1)
+
+    started = time.perf_counter()
+    with Authenticator() as authenticator, ItmoClient(authenticator) as client:
+        payload = client.fetch_schedule(start, end)
+    lessons = parse_schedule(payload, config.lesson_types)
+
+    with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
+        calendar.connect()
+        calendar.open_calendar(create=not dry_run)
+        existing = calendar.list_owned(start, end)
+
+        plan = build_plan(lessons, existing, start=start, end=end)
+        check_guards(plan, config, force=force)
+        result = apply_plan(
+            plan,
+            calendar,
+            config,
+            dry_run=dry_run,
+            elapsed=time.perf_counter() - started,
+        )
+
+    render(result, config, console)
 
 
 def main() -> None:

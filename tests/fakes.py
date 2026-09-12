@@ -13,7 +13,7 @@ from icalendar import Event
 
 from itmosync.errors import CalendarError
 from itmosync.ical.icloud import OwnedEvent, _guard_owned
-from itmosync.ical.mapper import HASH_PROPERTY, is_owned_uid
+from itmosync.ical.mapper import HASH_PROPERTY, TEACHER_PROPERTY, is_owned_uid
 
 
 class FakeCalendar:
@@ -43,9 +43,15 @@ class FakeCalendar:
             day = when.date() if isinstance(when, dt.datetime) else when
             if not (start <= day <= end):
                 continue
+            dtend = event.get("dtend")
             owned[uid] = OwnedEvent(
                 uid=uid,
                 content_hash=str(event.get(HASH_PROPERTY, "")),
+                summary=str(event.get("summary", "")),
+                start=when if isinstance(when, dt.datetime) else None,
+                end=dtend.dt if dtend is not None else None,
+                location=str(event.get("location", "")),
+                teacher=str(event.get(TEACHER_PROPERTY, "")),
                 sequence=self.sequences.get(uid, 0),
             )
         return owned

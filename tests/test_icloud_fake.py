@@ -10,7 +10,7 @@ from icalendar import Event
 
 from itmosync.config import DEFAULT_LESSON_TYPES, Config
 from itmosync.errors import CalendarError
-from itmosync.ical.icloud import ICloudCalendar, OwnedEvent, _guard_owned
+from itmosync.ical.icloud import ICloudCalendar, _guard_owned
 from itmosync.ical.mapper import content_hash, to_vevent, uid_for
 from itmosync.itmo.schedule import parse_schedule
 from itmosync.models import Lesson
@@ -101,9 +101,13 @@ def test_icloud_parse_reads_hash_and_sequence(lessons: list[Lesson], config: Con
 
     parsed = ICloudCalendar._parse(Item())
 
-    assert parsed == OwnedEvent(
-        uid=uid_for(lessons[0]), content_hash=content_hash(lessons[0]), sequence=4, created=None
-    )
+    assert parsed is not None
+    assert parsed.uid == uid_for(lessons[0])
+    assert parsed.content_hash == content_hash(lessons[0])
+    assert parsed.sequence == 4
+    assert parsed.summary == "Алгоритмы и структуры данных · лаб · 4213"
+    assert parsed.start == lessons[0].starts_at(config.tz)
+    assert parsed.teacher == ""
 
 
 def test_icloud_parse_skips_foreign_and_broken_items() -> None:
