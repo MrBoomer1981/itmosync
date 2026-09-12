@@ -19,7 +19,8 @@ from rich.console import Console
 from rich.table import Table
 
 from itmosync.config import DEFAULT_CONFIG_PATH, load_config, render_config, write_config
-from itmosync.errors import ItmosyncError
+from itmosync.errors import CalendarNotFoundError, ItmosyncError
+from itmosync.ical.icloud import ICloudCalendar
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
 from itmosync.itmo.client import ItmoClient
 from itmosync.itmo.schedule import parse_schedule
@@ -167,7 +168,33 @@ def doctor(
             left = token.expires_at - datetime.now(UTC)
             return f"access действителен ещё {int(left.total_seconds() // 60)} мин"
 
+        def fetch_schedule() -> str:
+            today = datetime.now(config.tz).date() if config else date.today()
+            with Authenticator() as authenticator, ItmoClient(authenticator) as client:
+                payload = client.fetch_schedule(today, today + timedelta(days=6))
+            assert config is not None
+            return f"занятий на неделю: {len(parse_schedule(payload, config.lesson_types))}"
+
+        def reach_icloud() -> str:
+            assert config is not None
+            with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
+                calendar.connect()
+            return config.calendar.apple_id
+
+        def find_calendar() -> str:
+            assert config is not None
+            with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
+                try:
+                    calendar.open_calendar(create=False)
+                except CalendarNotFoundError:
+                    # A clean machine has no calendar yet; the first sync creates it.
+                    return f"«{config.calendar.name}» пока нет, создам при первом sync"
+            return f"«{config.calendar.name}» найден"
+
         checks.append(_check("Refresh-токен обменивается", exchange_token))
+        checks.append(_check("API расписания отвечает", fetch_schedule))
+        checks.append(_check("iCloud доступен", reach_icloud))
+        checks.append(_check("Календарь на месте", find_calendar))
 
     raise typer.Exit(code=_print_checks(checks))
 
