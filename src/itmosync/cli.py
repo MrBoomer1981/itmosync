@@ -27,7 +27,7 @@ from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_tok
 from itmosync.itmo.client import ItmoClient
 from itmosync.itmo.schedule import parse_schedule
 from itmosync.logging import setup_logging
-from itmosync.report import render
+from itmosync.report import notify, notify_failure, render
 from itmosync.sync import apply_plan, build_plan, check_guards
 
 app = typer.Typer(
@@ -327,48 +327,62 @@ def sync(
         bool, typer.Option("--dry-run", help="Показать план, ничего не записывая.")
     ] = False,
     force: Annotated[bool, typer.Option("--force", help="Отключить предохранители.")] = False,
+    notify_override: Annotated[
+        bool | None,
+        typer.Option("--notify/--no-notify", help="Уведомление macOS о результате."),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Подробный лог.")] = False,
 ) -> None:
     setup_logging(verbose=verbose)
     config = load_config(config_path)
+    if notify_override is not None:
+        config = config.model_copy(
+            update={"sync": config.sync.model_copy(update={"notify": notify_override})}
+        )
 
     span = days if days is not None else config.sync.window_days
     start = datetime.now(config.tz).date()
     end = start + timedelta(days=span - 1)
 
     started = time.perf_counter()
-    with Authenticator() as authenticator, ItmoClient(authenticator) as client:
-        payload = client.fetch_schedule(start, end)
-    lessons = parse_schedule(payload, config.lesson_types)
+    try:
+        with Authenticator() as authenticator, ItmoClient(authenticator) as client:
+            payload = client.fetch_schedule(start, end)
+        lessons = parse_schedule(payload, config.lesson_types)
 
-    with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
-        calendar.connect()
-        existing: dict[str, OwnedEvent] = {}
-        try:
-            # A dry run must not create anything, not even the calendar — and the very first
-            # run is supposed to be a dry run, so a missing calendar is expected here.
-            calendar.open_calendar(create=not dry_run)
-        except CalendarNotFoundError:
-            if not dry_run:
-                raise
-            console.print(
-                f"[yellow]Календаря «{config.calendar.name}» ещё нет — "
-                "он будет создан при реальном запуске.[/yellow]\n"
+        with ICloudCalendar(config, SecretStore().get_apple_password()) as calendar:
+            calendar.connect()
+            existing: dict[str, OwnedEvent] = {}
+            try:
+                # A dry run must not create anything, not even the calendar — and the very
+                # first run is supposed to be a dry run, so a missing calendar is expected.
+                calendar.open_calendar(create=not dry_run)
+            except CalendarNotFoundError:
+                if not dry_run:
+                    raise
+                console.print(
+                    f"[yellow]Календаря «{config.calendar.name}» ещё нет — "
+                    "он будет создан при реальном запуске.[/yellow]\n"
+                )
+            else:
+                existing = calendar.list_owned(start, end)
+
+            plan = build_plan(lessons, existing, start=start, end=end)
+            check_guards(plan, config, force=force)
+            result = apply_plan(
+                plan,
+                calendar,
+                config,
+                dry_run=dry_run,
+                elapsed=time.perf_counter() - started,
             )
-        else:
-            existing = calendar.list_owned(start, end)
-
-        plan = build_plan(lessons, existing, start=start, end=end)
-        check_guards(plan, config, force=force)
-        result = apply_plan(
-            plan,
-            calendar,
-            config,
-            dry_run=dry_run,
-            elapsed=time.perf_counter() - started,
-        )
+    except ItmosyncError as exc:
+        # An unattended run that fails silently is worse than no automation at all.
+        notify_failure(exc, config)
+        raise
 
     render(result, config, console)
+    notify(result, config)
 
 
 def main() -> None:

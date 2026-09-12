@@ -53,6 +53,7 @@ class SyncConfig(BaseModel):
     reminder_minutes: int = Field(default=0, ge=0)
     online_link_in_location: bool = True
     delete_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    notify: bool = False
 
 
 class Config(BaseModel):
@@ -103,6 +104,7 @@ window_days = {defaults.window_days}
 reminder_minutes = {defaults.reminder_minutes}      # 0 = напоминаний нет
 online_link_in_location = {str(defaults.online_link_in_location).lower()}
 delete_threshold = {defaults.delete_threshold}
+notify = {str(defaults.notify).lower()}   # уведомление macOS после прогона
 
 [lesson_types]
 {types}
