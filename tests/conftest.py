@@ -16,3 +16,10 @@ def schedule_payload() -> dict[str, Any]:
     """The real one-week response recorded during API reconnaissance (anonymized)."""
     payload: dict[str, Any] = json.loads((FIXTURES / "schedule_sample.json").read_text("utf-8"))
     return payload
+
+
+@pytest.fixture
+def config() -> Any:
+    from itmosync.config import Config
+
+    return Config.model_validate({"calendar": {"apple_id": "student@icloud.com"}})
