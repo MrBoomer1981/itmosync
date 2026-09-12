@@ -18,9 +18,18 @@ notification history.
 
 ```bash
 git clone <this repo> && cd Calendar
-uv sync
-uv run itmosync --help
+uv tool install --editable .
+itmosync --help
 ```
+
+That puts `itmosync` on your `PATH` (in `~/.local/bin`), so it runs from any directory with
+no `uv run` prefix. If the shell cannot find it, add the directory to your `PATH`:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec zsh
+```
+
+`--editable` means edits to the source take effect immediately, without reinstalling.
 
 ## First run
 
@@ -39,14 +48,20 @@ up in your shell history. They are stored in the macOS Keychain under the servic
 
 ### Getting the my.itmo refresh token
 
-1. Open <https://my.itmo.ru> and sign in.
-2. Open the browser console (⌥⌘I → Console) and run:
+The short way — a bookmark that copies the token for you:
 
-   ```js
-   decodeURIComponent(document.cookie.split('auth._refresh_token.itmoId=')[1].split(';')[0])
-   ```
+```bash
+itmosync auth --bookmarklet          # prints the bookmarklet and what to do with it
+# ...open my.itmo, click the bookmark...
+itmosync auth --set-token --from-clipboard
+```
 
-3. Copy the string without the quotes and paste it into `itmosync auth --set-token`.
+The bookmarklet reads one cookie and copies it to the clipboard; it sends nothing anywhere.
+`--from-clipboard` wipes the clipboard once the token is stored.
+
+The manual way, if you would rather not use a bookmark: DevTools (⌥⌘I) → **Application** →
+**Storage → Cookies → https://my.itmo.ru** → copy the value of `auth._refresh_token.itmoId`
+→ paste it into `itmosync auth --set-token`.
 
 The token is good for about 30 days. Note the cookie name: `auth._token.itmoId` is the
 30-minute **access** token and will not work — `itmosync` rejects it with an explanation
@@ -61,11 +76,31 @@ This is **not** your main Apple ID password, which will not work here.
 ## Everyday use
 
 ```bash
-uv run itmosync sync              # 28-day rolling window from the config
-uv run itmosync sync --days 14    # a different horizon, once
-uv run itmosync sync --dry-run    # print the plan, write nothing
-uv run itmosync show --week       # print the schedule, never touch the calendar
+itmosync sync              # rolling window from the config
+itmosync sync --days 14    # a different horizon, once
+itmosync sync --dry-run    # print the plan, write nothing
+itmosync sync --notify     # post a macOS notification with the result
+itmosync show --week       # print the schedule, never touch the calendar
 ```
+
+## Running it automatically
+
+```bash
+itmosync schedule --install            # the 1st of each month at 09:00
+itmosync schedule --install --weekly   # Mondays at 09:00
+itmosync schedule --install --hour 20  # a different time of day
+itmosync schedule --status
+itmosync schedule --uninstall
+```
+
+This registers a launchd agent that runs `sync --notify`, so a failed run tells you instead
+of passing unnoticed. Output goes to `~/Library/Logs/itmosync.log`.
+
+**Prefer `--weekly`.** The refresh token lives about 30 days and is only renewed by a run, so
+a monthly schedule sits exactly on that boundary and will periodically wake up to a dead
+token. A weekly run keeps the token alive on its own.
+
+Notifications need permission the first time: System Settings → Notifications → Script Editor.
 
 A run prints what it did:
 

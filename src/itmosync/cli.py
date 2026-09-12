@@ -26,6 +26,10 @@ from itmosync.ical.icloud import ICloudCalendar, OwnedEvent
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
 from itmosync.itmo.client import ItmoClient
 from itmosync.itmo.schedule import parse_schedule
+from itmosync.launchagent import MONTHLY, WEEKLY, Schedule
+from itmosync.launchagent import install as install_agent
+from itmosync.launchagent import status as agent_status
+from itmosync.launchagent import uninstall as uninstall_agent
 from itmosync.logging import setup_logging
 from itmosync.report import notify, notify_failure, render
 from itmosync.sync import apply_plan, build_plan, check_guards
@@ -383,6 +387,55 @@ def sync(
 
     render(result, config, console)
     notify(result, config)
+
+
+@app.command(help="Автозапуск синхронизации через launchd.")
+def schedule(
+    install: Annotated[
+        bool, typer.Option("--install", help="Установить или переустановить задачу.")
+    ] = False,
+    uninstall: Annotated[bool, typer.Option("--uninstall", help="Удалить задачу.")] = False,
+    show_status: Annotated[
+        bool, typer.Option("--status", help="Показать состояние задачи.")
+    ] = False,
+    weekly: Annotated[
+        bool, typer.Option("--weekly", help="Раз в неделю вместо раза в месяц.")
+    ] = False,
+    hour: Annotated[int, typer.Option("--hour", min=0, max=23, help="Час запуска.")] = 9,
+) -> None:
+    if sum((install, uninstall, show_status)) != 1:
+        console.print("Укажите ровно один флаг: --install, --uninstall или --status")
+        raise typer.Exit(code=2)
+
+    if install:
+        plan = Schedule(interval=WEEKLY if weekly else MONTHLY, hour=hour)
+        path = install_agent(plan)
+        console.print(f"[green]✓[/green] Автозапуск включён: [bold]{plan.describe()}[/bold]")
+        console.print(f"[dim]{path}[/dim]")
+        console.print("\nЛог прогонов: [bold]~/Library/Logs/itmosync.log[/bold]")
+        if not weekly:
+            console.print(
+                "\n[yellow]Учтите:[/yellow] refresh-токен живёт около 30 дней и продлевается "
+                "только прогоном.\nПри месячном интервале он будет иногда протухать раньше "
+                "запуска — тогда придёт уведомление об ошибке.\nНадёжнее: "
+                "[bold]itmosync schedule --install --weekly[/bold]"
+            )
+        return
+
+    if uninstall:
+        removed = uninstall_agent()
+        if removed:
+            console.print("[green]✓[/green] Автозапуск выключен, задача удалена")
+        else:
+            console.print("Задача не была установлена")
+        return
+
+    registered, details = agent_status()
+    mark = "[green]✓[/green]" if registered else "[red]✗[/red]"
+    console.print(f"  {mark} {'задача зарегистрирована' if registered else 'автозапуска нет'}")
+    if details:
+        for line in details.splitlines():
+            console.print(f"    [dim]{line}[/dim]")
 
 
 def main() -> None:
