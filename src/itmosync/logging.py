@@ -58,9 +58,11 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     logger.propagate = False
     logger.handlers.clear()
 
-    handler = RichHandler(show_time=False, show_path=verbose, rich_tracebacks=True)
-    handler.addFilter(SecretMaskingFilter())
-    logger.addHandler(handler)
+    # The filter belongs on the logger, not on the handler: anything attached later —
+    # a file handler, a test handler — must be covered too.
+    logger.filters.clear()
+    logger.addFilter(SecretMaskingFilter())
+    logger.addHandler(RichHandler(show_time=False, show_path=verbose, rich_tracebacks=True))
     return logger
 
 
