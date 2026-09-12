@@ -4,13 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-This repository currently contains **only the specification**: `itmosync-tz.md` (Russian, v1.0).
-No code, no `pyproject.toml`, no git repository exists yet. The first implementation step
-(API reconnaissance) has not been done.
+Step 1 of the spec (API reconnaissance) is done; no application code exists yet. The repository
+holds `itmosync-tz.md` (the spec, Russian), `docs/api-notes.md` (the recorded API) and
+`tests/fixtures/schedule_sample.json` (an anonymized real response).
 
 `itmosync-tz.md` is the source of truth for scope, naming and architecture — read it before
-writing code. The one exception: once `docs/api-notes.md` exists, the **recorded real API
-response wins** over the spec's description of it, and the spec gets amended to match.
+writing code. Where it disagrees with `docs/api-notes.md` about the API, **api-notes wins** and
+the spec gets amended; several such corrections have already been applied.
+
+Three findings from reconnaissance that are easy to get wrong:
+
+- The schedule request **must** send `Accept-Language: ru`. Without it the API answers `200` with
+  the full structure but `subject`, `type` and `work_type` silently become `null`.
+- The refresh token lives in the `auth._refresh_token.itmoId` cookie. `auth._token.itmoId` is the
+  30-minute *access* token, prefixed with `Bearer `.
+- The lesson payload carries extra keys on some rows (`teacher_lesson`), so pydantic models must
+  ignore unknown fields, not forbid them.
 
 ## What is being built
 
