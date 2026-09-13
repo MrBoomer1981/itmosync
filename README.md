@@ -1,111 +1,97 @@
 # itmosync
 
-A macOS command-line tool that mirrors your personal my.itmo class schedule into a
-dedicated iCloud calendar. Run it by hand every week or so.
+Утилита командной строки для macOS, которая забирает ваше личное расписание занятий из
+my.itmo и поддерживает его в отдельном календаре iCloud.
 
-It is built to be idempotent: running it twice changes nothing the second time, and a
-lesson that moves to another room **updates** its existing event instead of being deleted
-and recreated — on a phone, a recreated event reads as a cancellation and loses its
-notification history.
+Главное свойство — **идемпотентность**: повторный запуск не создаёт дубликатов, а пара,
+переехавшая в другую аудиторию, **обновляет** существующее событие, а не удаляется и
+создаётся заново. Пересозданное событие на телефоне выглядит как отменённое и теряет
+историю уведомлений — именно этого и удалось избежать.
 
-## Requirements
+## Требования
 
-- macOS (secrets live in the Keychain)
-- Python 3.12, managed by [uv](https://docs.astral.sh/uv/)
-- An iCloud account and an ITMO ID login
+- macOS (секреты хранятся в связке ключей)
+- Python 3.12 под управлением [uv](https://docs.astral.sh/uv/)
+- Учётная запись iCloud и логин ITMO ID
 
-## Install
+## Установка
 
 ```bash
-git clone <this repo> && cd Calendar
+git clone <этот репозиторий> && cd Calendar
 uv tool install --editable .
 itmosync --help
 ```
 
-That puts `itmosync` on your `PATH` (in `~/.local/bin`), so it runs from any directory with
-no `uv run` prefix. If the shell cannot find it, add the directory to your `PATH`:
+Команда встаёт в `~/.local/bin` и работает из любого каталога, без префикса `uv run`. Если
+оболочка её не находит, добавьте каталог в `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec zsh
 ```
 
-`--editable` means edits to the source take effect immediately, without reinstalling.
+Флаг `--editable` означает, что правки в исходниках действуют сразу, переустанавливать пакет
+не нужно.
 
-## First run
+## Первый запуск
 
 ```bash
-uv run itmosync init                       # writes ~/.config/itmosync/config.toml
-uv run itmosync auth --set-token           # my.itmo refresh token
-uv run itmosync auth --set-apple-password  # Apple ID app-specific password
-uv run itmosync doctor                     # checks everything end to end
-uv run itmosync sync --dry-run             # look before you write
-uv run itmosync sync
+itmosync init                       # создаст ~/.config/itmosync/config.toml
+itmosync auth --set-token           # refresh-токен my.itmo
+itmosync auth --set-apple-password  # пароль приложения Apple ID
+itmosync doctor                     # проверит всё по цепочке
+itmosync sync --dry-run             # посмотреть план, ничего не записывая
+itmosync sync
 ```
 
-Both secrets are read from stdin, never from a command-line argument, so they do not end
-up in your shell history. They are stored in the macOS Keychain under the service
-`itmosync` and never written to the config file, to logs, or to any error message.
+Оба секрета читаются из stdin, а не из аргумента командной строки — иначе они осели бы в
+истории оболочки. Хранятся в связке ключей macOS под сервисом `itmosync` и никогда не
+попадают ни в конфиг, ни в логи, ни в текст ошибок.
 
-### Getting the my.itmo refresh token
+### Как получить refresh-токен my.itmo
 
-The short way — a bookmark that copies the token for you:
+Короткий путь — закладка, которая копирует токен за вас:
 
 ```bash
-itmosync auth --bookmarklet          # prints the bookmarklet and what to do with it
-# ...open my.itmo, click the bookmark...
+itmosync auth --bookmarklet          # напечатает закладку и что с ней делать
+# ...откройте my.itmo, нажмите закладку...
 itmosync auth --set-token --from-clipboard
 ```
 
-The bookmarklet reads one cookie and copies it to the clipboard; it sends nothing anywhere.
-`--from-clipboard` wipes the clipboard once the token is stored.
+Закладка читает одну cookie и кладёт её в буфер обмена, никуда ничего не отправляя.
+`--from-clipboard` очищает буфер сразу после того, как токен сохранён.
 
-The manual way, if you would rather not use a bookmark: DevTools (⌥⌘I) → **Application** →
-**Storage → Cookies → https://my.itmo.ru** → copy the value of `auth._refresh_token.itmoId`
-→ paste it into `itmosync auth --set-token`.
+Ручной путь, если возиться с закладкой не хочется: DevTools (⌥⌘I) → вкладка **Application**
+→ **Storage → Cookies → https://my.itmo.ru** → скопировать значение
+`auth._refresh_token.itmoId` → вставить в `itmosync auth --set-token`.
 
-The token is good for about 30 days. Note the cookie name: `auth._token.itmoId` is the
-30-minute **access** token and will not work — `itmosync` rejects it with an explanation
-rather than failing later.
+Не перепутайте с соседней `auth._token.itmoId`: это **access**-токен на 30 минут с префиксом
+`Bearer`. Он не подойдёт, и утилита отвергнет его с пояснением, а не упадёт позже.
 
-### Getting the Apple app-specific password
+### Как получить пароль приложения Apple ID
 
-At <https://appleid.apple.com> → Sign-In and Security → App-Specific Passwords, create one
-and paste it into `itmosync auth --set-apple-password`. It looks like `abcd-efgh-ijkl-mnop`.
-This is **not** your main Apple ID password, which will not work here.
+На [appleid.apple.com](https://appleid.apple.com) → «Вход и безопасность» → «Пароли для
+приложений» → создать новый и вставить в `itmosync auth --set-apple-password`. Выглядит он
+как `abcd-efgh-ijkl-mnop`.
 
-## Everyday use
+Это **не** основной пароль от Apple ID — основной здесь не сработает. При включённой
+двухфакторной аутентификации Apple пускает сторонние программы в CalDAV только по паролю
+приложения. Если раздела «Пароли для приложений» на странице нет, значит двухфакторная
+аутентификация выключена и её нужно сначала включить.
 
-```bash
-itmosync sync              # rolling window from the config
-itmosync sync --days 14    # a different horizon, once
-itmosync sync --dry-run    # print the plan, write nothing
-itmosync sync --notify     # post a macOS notification with the result
-itmosync show --week       # print the schedule, never touch the calendar
-```
-
-## Running it automatically
+## Повседневное использование
 
 ```bash
-itmosync schedule --install            # the 1st of each month at 09:00
-itmosync schedule --install --weekly   # Mondays at 09:00
-itmosync schedule --install --hour 20  # a different time of day
-itmosync schedule --status
-itmosync schedule --uninstall
+itmosync sync              # скользящее окно из конфига
+itmosync sync --days 14    # другой горизонт, разово
+itmosync sync --dry-run    # напечатать план, ничего не записывая
+itmosync sync --notify     # уведомление macOS с результатом
+itmosync show --week       # напечатать расписание, календарь не трогая
 ```
 
-This registers a launchd agent that runs `sync --notify`, so a failed run tells you instead
-of passing unnoticed. Output goes to `~/Library/Logs/itmosync.log`.
-
-**Prefer `--weekly`.** The refresh token lives about 30 days and is only renewed by a run, so
-a monthly schedule sits exactly on that boundary and will periodically wake up to a dead
-token. A weekly run keeps the token alive on its own.
-
-Notifications need permission the first time: System Settings → Notifications → Script Editor.
-
-A run prints what it did:
+Прогон отчитывается о том, что сделал:
 
 ```
-Синхронизация 12.09 – 09.10
+Синхронизация 13.09 – 13.10
 
   Добавлено    12
   Обновлено     3
@@ -118,64 +104,88 @@ A run prints what it did:
 Готово за 6.2 с
 ```
 
-## When the token expires
-
-`itmosync` will stop with a message that prints the exact console snippet to run. Repeat the
-refresh-token step above; nothing else needs to change.
-
-The nominal lifetime is about 30 days, but it can end sooner: ITMO ID rotates the refresh
-token on every exchange, so only one holder can be valid at a time. If your browser session
-on my.itmo refreshes itself, the token stored for `itmosync` stops working, and vice versa.
-That is not a bug to work around — just take a fresh token when it happens. For the same
-reason, do not run two syncs at once.
-
-## What it will not do
-
-Three guards protect the calendar, and all of them run *before* anything is written:
-
-- **Empty schedule.** If my.itmo returns no lessons while your calendar still has some,
-  the run aborts. That is what a broken API or a stale token returning `200` with an empty
-  body looks like, and it would otherwise wipe a month of events.
-- **Mass deletion.** If more than `delete_threshold` (50% by default) of the events would
-  be deleted, the run aborts and shows you the list.
-- **Scope.** Reads, writes and deletes are limited to the sync window *and* to events
-  `itmosync` itself created. An event you add by hand to the same calendar is invisible to
-  the tool and survives any number of runs.
-
-Both of the first two can be overridden with `--force` once you have looked at the list.
-
-## Configuration
-
-`~/.config/itmosync/config.toml`, created by `itmosync init`:
-
-| Key | Default | Meaning |
-|---|---|---|
-| `calendar.name` | `ИТМО · Пары` | Calendar to use; created on first sync if absent |
-| `calendar.timezone` | `Europe/Moscow` | Written into the events as a real VTIMEZONE |
-| `sync.window_days` | `28` | How far ahead to sync |
-| `sync.reminder_minutes` | `0` | `0` means no alarms at all |
-| `sync.online_link_in_location` | `true` | Put the meeting link in the Location field, where it is tappable from a notification |
-| `sync.delete_threshold` | `0.5` | Deletion share above which a run needs `--force` |
-| `lesson_types` | see file | Maps the API's type strings to short labels |
-
-An unknown lesson type is not an error: its first word is used and a warning names the
-exact string so you can add it to `lesson_types`.
-
-## Exit codes
-
-`0` success · `2` configuration · `3` authentication · `4` schedule API · `5` calendar ·
-`6` a safety guard fired · `1` anything else
-
-## Development
+## Автоматический запуск
 
 ```bash
-uv run pytest                                   # full suite
+itmosync schedule --install            # 1-го числа каждого месяца в 09:00
+itmosync schedule --install --weekly   # по понедельникам в 09:00 — рекомендуемый вариант
+itmosync schedule --install --hour 20  # другое время суток
+itmosync schedule --status
+itmosync schedule --uninstall
+```
+
+Регистрируется агент launchd, запускающий `sync --notify`, — то есть о неудачном прогоне вы
+узнаете, а не обнаружите через месяц устаревший календарь. Вывод пишется в
+`~/Library/Logs/itmosync.log`.
+
+**Берите `--weekly`, а не месячный интервал.** Refresh-токен живёт около 30 дней и
+продлевается только прогоном, поэтому месячное расписание проходит ровно по этой границе и
+будет периодически просыпаться на мёртвом токене. Еженедельный прогон продлевает токен сам:
+при каждом обмене ITMO ID выдаёт новый со свежим сроком.
+
+Частота прогонов и горизонт синхронизации — разные вещи: еженедельный запуск всё равно держит
+календарь заполненным на `window_days` вперёд.
+
+Уведомления первый раз потребуют разрешения: Системные настройки → «Уведомления» →
+**Script Editor**.
+
+## Когда токен всё-таки истечёт
+
+`itmosync` остановится с сообщением, в котором напечатана готовая инструкция. Повторите шаг с
+получением токена — больше ничего менять не нужно.
+
+При еженедельном автозапуске это обычно не случается вовсе. Токен может умереть раньше срока,
+если мак был выключен больше месяца, если вы вышли из аккаунта на my.itmo или сменили пароль
+ИСУ.
+
+## Чего утилита не сделает
+
+Календарь защищают три предохранителя, и все они срабатывают **до** любой записи:
+
+- **Пустое расписание.** Если my.itmo не вернул ни одного занятия, а в календаре они есть,
+  прогон прерывается. Именно так выглядит сломавшийся API или протухший токен, отдавший `200`
+  с пустым телом, — иначе месяц событий был бы стёрт.
+- **Массовое удаление.** Если удалению подлежит больше `delete_threshold` (по умолчанию
+  половина) событий, прогон прерывается и показывает список.
+- **Область действия.** Чтение, запись и удаление ограничены окном синхронизации **и**
+  событиями, которые создал сам `itmosync`. Событие, добавленное вами вручную в тот же
+  календарь, для утилиты невидимо и переживает любое число прогонов.
+
+Первые два обходятся флагом `--force` — после того, как вы посмотрели на список.
+
+## Настройки
+
+`~/.config/itmosync/config.toml`, создаётся командой `itmosync init`:
+
+| Ключ | По умолчанию | Значение |
+|---|---|---|
+| `calendar.name` | `ИТМО · Пары` | Какой календарь использовать; создаётся при первом прогоне |
+| `calendar.timezone` | `Europe/Moscow` | Записывается в события полноценным `VTIMEZONE` |
+| `sync.window_days` | `28` | На сколько дней вперёд синхронизировать |
+| `sync.reminder_minutes` | `0` | `0` — напоминаний нет вовсе |
+| `sync.online_link_in_location` | `true` | Ссылка на созвон в поле «Место», откуда она кликабельна прямо из уведомления |
+| `sync.delete_threshold` | `0.5` | Доля удалений, выше которой нужен `--force` |
+| `sync.notify` | `false` | Уведомление macOS после прогона |
+| `lesson_types` | см. файл | Соответствие строк типа занятия из API коротким меткам |
+
+Неизвестный тип занятия не считается ошибкой: берётся первое слово исходной строки, а в лог
+пишется предупреждение с точным текстом — чтобы вы могли добавить его в `lesson_types`.
+
+## Коды возврата
+
+`0` успех · `2` ошибка конфигурации · `3` ошибка авторизации · `4` ошибка API расписания ·
+`5` ошибка календаря · `6` сработал предохранитель · `1` прочее
+
+## Разработка
+
+```bash
+uv run pytest                                   # весь набор
 uv run pytest tests/test_sync_diff.py::test_idempotent_second_run
 uv run pytest --cov=itmosync.sync --cov=itmosync.ical.mapper --cov-report=term-missing
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy --strict src
 ```
 
-`docs/api-notes.md` records the my.itmo API as it actually behaves and is the source of
-truth for the parsing models. Tests never touch a live iCloud account: `tests/fakes.py`
-provides an in-memory calendar with the same interface.
+`docs/api-notes.md` описывает API my.itmo так, как он ведёт себя на самом деле, и служит
+источником истины для моделей разбора. Живой iCloud в тестах не используется: `tests/fakes.py`
+предоставляет календарь в памяти с тем же интерфейсом.
