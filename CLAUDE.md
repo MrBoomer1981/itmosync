@@ -4,8 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-All eight steps of the spec are implemented and committed; the tool runs. What remains is
-the live acceptance pass from §15 — a real `sync` against the user's iCloud account.
+All eight steps of §14 of the spec are implemented and committed, and three features that
+post-date the spec were added on top: the token bookmarklet (`auth --bookmarklet`), macOS
+notifications (`report.notify`) and unattended runs through launchd (`schedule --install`).
+The tool runs and the suite is green — 104 tests, `ruff` and `mypy --strict` clean.
+
+The live acceptance pass from §15 is partly done. Verified against the user's real iCloud
+calendar on 2026-09-15: `sync --dry-run` produced a correct plan and wrote nothing, a real
+`sync` applied it (87 events in the window, 5 created, 5 deleted), and the run right after it
+reported zero changes — idempotency holds on live data, not only in `test_idempotent_second_run`.
+
+Still unverified from §15: `doctor` on a clean machine, the events showing up on the phone, a
+hand-made event in the same calendar surviving three runs, and the message shown for a revoked
+token.
 
 `itmosync-tz.md` is the source of truth for scope, naming and architecture. Where it
 disagrees with `docs/api-notes.md` about the API, **api-notes wins** and the spec gets
@@ -23,8 +34,8 @@ Three findings from reconnaissance that are easy to get wrong:
 ## What is being built
 
 `itmosync` — a macOS CLI that pulls the user's personal class schedule from the internal
-my.itmo API and mirrors it into a dedicated iCloud calendar over CalDAV. Run manually, roughly
-weekly, over a rolling 28-day window.
+my.itmo API and mirrors it into a dedicated iCloud calendar over CalDAV. Run by hand or from a
+weekly launchd agent, over a rolling 28-day window.
 
 The whole project exists to be **idempotent**: a repeated run must produce zero changes, and a
 changed lesson must *update* the existing event rather than delete-and-recreate it (recreation
@@ -36,13 +47,11 @@ Python 3.12 managed by `uv`. The machine's default `python3` is 3.14 and 3.12 is
 so pin it explicitly: `uv python install 3.12` and `requires-python = ">=3.12,<3.13"` in
 `pyproject.toml`.
 
-Once the skeleton (step 2) exists, the expected commands are:
-
 ```bash
 uv sync --all-extras                 # install deps + dev deps
 uv run pytest                        # all tests
 uv run pytest tests/test_sync_diff.py::test_idempotent_second_run   # a single test
-uv run pytest --cov=src/itmosync --cov-report=term-missing
+uv run pytest --cov=itmosync.sync --cov=itmosync.ical.mapper --cov-report=term-missing
 uv run ruff check src tests
 uv run ruff format src tests
 uv run mypy --strict src             # must be clean on all of src/
@@ -50,7 +59,33 @@ uv run itmosync <command>            # the CLI itself
 ```
 
 `ruff` and `mypy --strict` passing on the entire `src/` is a hard acceptance criterion, not a
-nice-to-have. Core coverage (`sync.py`, `ical/mapper.py`) must be ≥ 90%.
+nice-to-have.
+
+**Scope the coverage run to the two core modules, as above.** `fail_under = 90` in
+`pyproject.toml` applies to whatever is being measured, while the 90% floor from the spec is
+defined only for `sync.py` and `ical/mapper.py`. Measuring the whole package
+(`--cov=src/itmosync`) therefore *fails* at ~68% even when nothing is wrong; the scoped run
+reports ~99%.
+
+For anything involving launchd, use the installed console script rather than `uv run`:
+`uv tool install --editable .` puts `itmosync` in `~/.local/bin`. `launchagent.py` resolves the
+program through `shutil.which("itmosync")`, and launchd hands a job a minimal environment in
+which a bare command name would not resolve at all.
+
+## The commands
+
+```
+itmosync init       write ~/.config/itmosync/config.toml
+itmosync auth       store secrets in the Keychain (--set-token, --set-apple-password,
+                    --bookmarklet, --from-clipboard)
+itmosync doctor     config, ITMO ID, schedule API and iCloud, as a checklist
+itmosync show       print the schedule as a table; touches no calendar at all
+itmosync sync       the real thing; --dry-run prints the plan and writes nothing
+itmosync schedule   the launchd agent: --install [--weekly] [--hour N], --status, --uninstall
+```
+
+`sync --dry-run` is also the answer to "what changed since last time?" — it reads my.itmo, reads
+the calendar, diffs them and prints what it *would* do.
 
 ## Architecture
 
@@ -58,26 +93,34 @@ Data flows in one direction and each layer knows nothing about the next:
 
 ```
 itmo/auth.py     refresh token -> access token (Keychain in, nothing out)
-itmo/client.py   the ONLY module containing my.itmo URLs; raw HTTP + retries
+itmo/client.py   the ONLY module containing my.itmo URLs; raw HTTP + the shared retry policy
 itmo/schedule.py raw JSON -> validated pydantic -> list[Lesson]
-models.py        Lesson (frozen dataclass), LessonType, SyncPlan, SyncResult
+models.py        Lesson (frozen dataclass), LessonType, normalize_subject
 ical/mapper.py   Lesson -> VEVENT (pure; no network)
-ical/icloud.py   CalDAV: read window, create/update/delete
-sync.py          the diff engine: desired vs existing -> plan -> apply
-report.py        SyncResult -> rich output
+ical/icloud.py   the CalendarBackend protocol + the real CalDAV implementation
+sync.py          the diff engine: desired vs existing -> SyncPlan -> SyncResult
+report.py        SyncResult -> rich output, and macOS notifications through osascript
+launchagent.py   the launchd plist: install / uninstall / status
 cli.py           typer commands: parse args, call, print. No logic.
 ```
 
 `sync.py` must not know how the report is rendered — a future Telegram bot is explicitly out of
 scope but must not require rewriting the engine.
 
+`CalendarBackend` — a `Protocol` in `ical/icloud.py` — is the seam that keeps CalDAV out of the
+test suite. `tests/fakes.py::FakeCalendar` implements it over a dict and imports the real
+`_guard_owned`, so a test that reaches for a foreign UID fails exactly as production would.
+
 ### The two identity keys (the central design decision)
 
 These are different keys and must never be conflated:
 
-- **UID** — the stable anchor: `sha1("{date}|{normalized subject}|{type}|{index}")[:16]`, wrapped
-  as `itmo-lesson-<16 hex>@itmosync`. Time, room, building, teacher and links are deliberately
-  **not** part of it, so a room change updates the event in place.
+- **UID** — the stable anchor: `sha1("{date}|{normalized subject}|{label}|{index}")[:16]`, wrapped
+  as `itmo-lesson-<16 hex>@itmosync`. Note **`label`** — the short string from `[lesson_types]`,
+  not the `LessonType` enum: an unmapped type falls back to its first word rather than to
+  `OTHER`, which is what keeps two unknown types on one day distinguishable. Time, room,
+  building, teacher and links are deliberately **not** part of the UID, so a room change updates
+  the event in place.
 - **X-ITMO-HASH** — the content hash over start/end/subject/raw_type/room/building/teacher/
   online_url, stored as an X-property inside the VEVENT itself. It answers "does this event need
   updating?".
@@ -85,9 +128,15 @@ These are different keys and must never be conflated:
 Because the hash lives in the event, **the calendar is the state store**. There is no SQLite and
 none is needed in this version.
 
-`Lesson.index` is the ordinal of a lesson among same (date, subject, type) lessons that day,
+`Lesson.index` is the ordinal of a lesson among same (date, subject, label) lessons that day,
 assigned after sorting by start time. Without it two lectures of one subject on one day collapse
 into a single UID.
+
+A consequence worth recognising in a report before someone calls it a bug: a lesson moved to
+another weekday is a **new identity**, so the plan shows it as one delete plus one create rather
+than an update. That is the design — the date is part of the UID. It happened for real on
+2026-09-15, when a practice moved from Wednesday to Saturday and the plan read "5 deleted, 5
+created". Only changes *within* the same day (time, room, building, teacher, link) are updates.
 
 ### Safety guards (all three are mandatory, all run before any write)
 
@@ -101,15 +150,29 @@ into a single UID.
 
 ## Invariants
 
-- my.itmo URLs live **only** in `itmo/client.py`. Not one address string anywhere else.
+- my.itmo URLs live **only** in `itmo/client.py`. Not one address string anywhere else. The
+  `id.itmo.ru` constant in `itmo/auth.py` is a **deliberate exception**, not an oversight: the
+  invariant is about my.itmo, and ITMO ID is a separate Keycloak host. Leave it where it is.
+- Import direction inside `itmo/`: `auth.py` imports `request_with_retries` from `client.py` at
+  runtime, and `client.py` imports `Authenticator` only under `TYPE_CHECKING`. That is what keeps
+  the cycle broken, so the shared retry policy stays in `client.py`.
+- Keycloak **rotates the refresh token on every exchange**, and `Authenticator.refresh()` writes
+  the new one back to the Keychain. A run is therefore what keeps the token alive — hence
+  `schedule --install --weekly` over the monthly default, which would land right on the token's
+  ~30-day lifetime.
 - The calendar package is named `ical`, never `calendar` — `calendar` shadows the stdlib module.
 - Every deletion goes through **one** function that checks the UID mask. A second deletion path in
   the code is a bug.
+- `apply_plan` writes in the order create → update → delete, so a lesson whose identity changed is
+  never briefly absent from the calendar. `update_event` bumps `SEQUENCE` (without it clients do
+  not notice the change) and carries `CREATED` over from the previous event.
 - All datetimes are timezone-aware (`Europe/Moscow`, real `VTIMEZONE` written). Naive `datetime` is
   forbidden; floating times in VEVENTs are forbidden.
 - Secrets live only in the macOS Keychain under service `itmosync` (`itmo_refresh_token`,
   `apple_app_password` — an Apple *app-specific* password). Never in the config file, logs, report
-  output or error messages. The logger masks any token-looking string over 20 chars to `abcd…wxyz`.
+  output or error messages. The logger masks any token-looking string over 20 chars to `abcd…wxyz`;
+  its regex deliberately excludes dots and slashes from the generic alternative, so paths and URLs
+  survive masking and the logs stay debuggable.
 - Config is `~/.config/itmosync/config.toml`, created by `itmosync init`; the `[lesson_types]`
   table maps the API's Russian type strings to short labels. An unknown type is *not* an error:
   fall back to the first word lowercased and log a warning containing the exact string.
@@ -124,8 +187,11 @@ into a single UID.
 
 - **Replies to the user are always in Russian**, whatever the language of the request or of the
   files involved.
-- **All technical documentation is in English**: this file, the README, everything under `docs/`,
-  docstrings, code comments, identifiers and commit messages.
+- **The README is Russian.** It was deliberately rewritten from English at the user's request —
+  it is the document people actually read to install and use the tool. Do not translate it back.
+- **The rest of the technical documentation is English**: this file, everything under `docs/`,
+  docstrings, code comments, identifiers and commit messages. (`itmosync-tz.md` is the user's own
+  specification and stays Russian.)
 - **Product text shipped to the end user is Russian** — CLI help, the report, log and error
   messages — and error messages say what to do next (`TokenExpiredError` prints the
   browser-console snippet for extracting a fresh refresh token).
@@ -143,24 +209,14 @@ re-agree the plan rather than improvising past it.
 For work that maps onto §14 of the spec, a plan covers exactly one step of that list — the steps
 are the natural commit-sized units.
 
-## Working order
+## Commit discipline
 
-Follow §14 of the spec; each step ends green (ruff + mypy + pytest) and gets exactly one commit:
-
-1. **API reconnaissance — write no code until this is done.** Record the schedule endpoint, query
-   params, headers, the ITMO ID token endpoint, and the exact lesson-type strings in
-   `docs/api-notes.md`; save an anonymized response to `tests/fixtures/schedule_sample.json`.
-   Pydantic schemas are written against the recorded response, never against a guess.
-2. Skeleton — `pyproject.toml`, packages, `config.py`, `errors.py`, `logging.py`, `init`, empty `doctor`.
-3. Auth — `itmo/auth.py`, `auth` commands, respx tests.
-4. Schedule reading — `itmo/client.py`, `itmo/schedule.py`, `models.py`, `show` (parser verifiable by eye before any CalDAV).
-5. `ical/mapper.py` + `test_mapper_golden`.
-6. `ical/icloud.py` + `doctor` iCloud checks.
-7. `sync.py`, guards, `report.py`, `sync` — plus the full test list in §13.
-8. README.
-
-The first run against the live calendar is `--dry-run` only.
+Every §14 step got exactly one commit, and new work keeps that shape: one self-contained change
+per commit, an English message, and the tree green (`ruff`, `mypy --strict`, `pytest`) before the
+commit is made.
 
 The key test of the project is `test_idempotent_second_run`: two runs over identical data, the
-second producing an empty plan. CalDAV is never hit in tests — use an in-memory fake client with
-the same interface.
+second producing an empty plan. CalDAV is never hit in tests — `tests/fakes.py` provides an
+in-memory backend with the same interface.
+
+The first run against a live calendar is `--dry-run` only.
