@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 All eight steps of §14 of the spec are implemented and committed, and three features that
 post-date the spec were added on top: the token bookmarklet (`auth --bookmarklet`), macOS
 notifications (`report.notify`) and unattended runs through launchd (`schedule --install`).
-The tool runs and the suite is green — 104 tests, `ruff` and `mypy --strict` clean.
+The tool runs and the tree is green: `pytest`, `ruff` and `mypy --strict` all pass.
 
 The live acceptance pass from §15 is partly done. Verified against the user's real iCloud
 calendar on 2026-09-15: `sync --dry-run` produced a correct plan and wrote nothing, a real
@@ -48,7 +48,7 @@ so pin it explicitly: `uv python install 3.12` and `requires-python = ">=3.12,<3
 `pyproject.toml`.
 
 ```bash
-uv sync --all-extras                 # install deps + dev deps
+uv sync                              # install deps + the `dev` dependency group
 uv run pytest                        # all tests
 uv run pytest tests/test_sync_diff.py::test_idempotent_second_run   # a single test
 uv run pytest --cov=itmosync.sync --cov=itmosync.ical.mapper --cov-report=term-missing
@@ -104,6 +104,18 @@ launchagent.py   the launchd plist: install / uninstall / status
 cli.py           typer commands: parse args, call, print. No logic.
 ```
 
+Three modules sit beside that pipeline and are used by every layer:
+
+```
+errors.py        the ItmosyncError hierarchy; each class carries its exit code as `exit_code`
+config.py        pydantic models for config.toml, load_config / render_config
+logging.py       setup_logging + SecretMaskingFilter, which masks secrets in every record
+```
+
+`cli.py` turns an exception into a process exit code in exactly one place, by reading
+`exc.exit_code`. A new exit code therefore means a new exception class in `errors.py`, never a
+literal `SystemExit(n)` in a command.
+
 `sync.py` must not know how the report is rendered — a future Telegram bot is explicitly out of
 scope but must not require rewriting the engine.
 
@@ -141,18 +153,24 @@ created". Only changes *within* the same day (time, room, building, teacher, lin
 ### Safety guards (all three are mandatory, all run before any write)
 
 1. Empty `desired` while `existing` is non-empty aborts the run — protects against a broken API or
-   a stale token returning `200` with an empty body wiping the calendar. Only `--force` overrides.
+   a stale token returning `200` with an empty body wiping the calendar.
 2. `len(to_delete) / max(len(existing), 1) > delete_threshold` (default 0.5) aborts and prints what
    would have been deleted.
 3. Scope: reads, writes and deletes are confined to the window **and** to UIDs matching
    `^itmo-lesson-[0-9a-f]{16}@itmosync$`. Manually created events in the same calendar are invisible
    to the tool.
 
+`sync --force` switches off guards 1 **and** 2 together (`check_guards` returns early); there is
+no flag for just one of them. Guard 3 cannot be switched off.
+
 ## Invariants
 
 - my.itmo URLs live **only** in `itmo/client.py`. Not one address string anywhere else. The
   `id.itmo.ru` constant in `itmo/auth.py` is a **deliberate exception**, not an oversight: the
   invariant is about my.itmo, and ITMO ID is a separate Keycloak host. Leave it where it is.
+  The second deliberate exception is `https://my.itmo.ru` in `errors.py`: it is text in the
+  `TokenExpiredError` instructions telling the user which page to open, not an address the code
+  requests.
 - Import direction inside `itmo/`: `auth.py` imports `request_with_retries` from `client.py` at
   runtime, and `client.py` imports `Authenticator` only under `TYPE_CHECKING`. That is what keeps
   the cycle broken, so the shared retry policy stays in `client.py`.
