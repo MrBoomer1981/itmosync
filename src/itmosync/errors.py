@@ -68,6 +68,10 @@ class RateLimitError(ItmoApiError):
     """The schedule API asked us to slow down."""
 
 
+class NetworkUnavailableError(ItmoApiError):
+    """my.itmo did not answer at all within the wait — there is no network yet."""
+
+
 class CalendarError(ItmosyncError):
     """Talking to the calendar failed."""
 

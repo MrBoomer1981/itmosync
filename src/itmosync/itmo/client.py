@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from itmosync.errors import ItmoApiError, ItmosyncError, RateLimitError
+from itmosync.errors import (
+    ItmoApiError,
+    ItmosyncError,
+    NetworkUnavailableError,
+    RateLimitError,
+)
 from itmosync.logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import only for typing, auth.py imports us at runtime
@@ -26,6 +31,7 @@ SCHEDULE_PATH: Final = "/api/schedule/schedule/personal"
 TIMEOUT: Final = 15.0
 MAX_ATTEMPTS: Final = 3
 BACKOFF_BASE: Final = 0.5
+PROBE_TIMEOUT: Final = 5.0
 
 _log = get_logger()
 
@@ -60,6 +66,38 @@ def request_with_retries(
             time.sleep(BACKOFF_BASE * 2 ** (attempt - 1))
 
     raise error_factory(f"после {MAX_ATTEMPTS} попыток: {last_error}")
+
+
+def wait_for_network(
+    timeout: float = 90.0,
+    interval: float = 5.0,
+    client: httpx.Client | None = None,
+) -> None:
+    """Block until my.itmo answers at all, or raise NetworkUnavailableError.
+
+    Right after the Mac wakes up Wi-Fi is often not back yet, and the regular retry policy
+    gives up within a couple of seconds. Any HTTP response counts: the question here is
+    whether there is a network, not whether the API is healthy.
+    """
+    probe = client or httpx.Client(timeout=PROBE_TIMEOUT, base_url=BASE_URL)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                probe.head("/")
+            except httpx.HTTPError as exc:
+                _log.debug("сети пока нет: %s", str(exc) or exc.__class__.__name__)
+            else:
+                return
+            if time.monotonic() + interval > deadline:
+                raise NetworkUnavailableError(
+                    f"Сети нет: my.itmo не ответил за {timeout:.0f} с. "
+                    "Синхронизация повторится при следующем запуске."
+                )
+            time.sleep(interval)
+    finally:
+        if client is None:
+            probe.close()
 
 
 class ItmoClient:

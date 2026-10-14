@@ -335,11 +335,12 @@ X-ITMO-HASH = sha1(content_key.encode()).hexdigest()[:16]
 | `itmosync auth --set-token` | Принимает refresh-токен из stdin (не из аргумента — он попадёт в history), кладёт в Keychain, сразу проверяет обменом на access |
 | `itmosync auth --set-apple-password` | То же для пароля приложения Apple ID |
 | `itmosync doctor` | Проверяет по пунктам: конфиг читается; refresh-токен обменивается; API расписания отвечает; iCloud доступен; календарь найден или может быть создан; таймзона корректна. Печатает чек-лист с ✓/✗ |
-| `itmosync sync [--days N] [--dry-run] [--force] [--verbose]` | Основная команда |
+| `itmosync sync [--days N] [--dry-run] [--force] [--verbose] [--once-a-day]` | Основная команда. `--once-a-day`: ничего не делать, если сегодня уже была успешная синхронизация; перед работой до 90 с ждать сеть, без сети тихо выйти с кодом 4 |
 | `itmosync show [--week \| --days N]` | Печатает расписание таблицей, в календарь не пишет. Полезно для проверки парсера отдельно от записи |
 | `itmosync auth --bookmarklet` | Печатает закладку, кладущую refresh-токен в буфер обмена |
 | `itmosync auth --set-token --from-clipboard` | Берёт токен из буфера и затирает буфер после сохранения |
 | `itmosync schedule --install [--weekly] [--hour N]` | Ставит launchd-агент, запускающий `sync --notify` |
+| `itmosync schedule --install --daily` | Агент срабатывает каждый час и при входе в систему (`RunAtLoad`) и запускает `sync --notify --once-a-day`; пропущенный во сне запуск launchd выполняет при пробуждении (добавлено после приёмки по просьбе заказчика) |
 | `itmosync schedule --status \| --uninstall` | Состояние задачи и её удаление |
 
 **Коды возврата:** `0` успех · `2` ошибка конфигурации · `3` ошибка

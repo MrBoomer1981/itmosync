@@ -23,3 +23,11 @@ def config() -> Any:
     from itmosync.config import Config
 
     return Config.model_validate({"calendar": {"apple_id": "student@icloud.com"}})
+
+
+@pytest.fixture(autouse=True)
+def stamp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Keep every test away from the real ~/.local/state: a real sync writes the stamp."""
+    path = tmp_path / "state" / "last-sync"
+    monkeypatch.setattr("itmosync.runstamp.STAMP_PATH", path)
+    return path

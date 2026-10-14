@@ -13,6 +13,7 @@ import pytest
 
 from itmosync.errors import ConfigError
 from itmosync.launchagent import (
+    DAILY,
     LABEL,
     MONTHLY,
     WEEKLY,
@@ -81,7 +82,29 @@ def test_missing_binary_explains_how_to_install(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.parametrize(
     ("interval", "expected"),
-    [(MONTHLY, "1-го числа"), (WEEKLY, "по понедельникам")],
+    [(MONTHLY, "1-го числа"), (WEEKLY, "по понедельникам"), (DAILY, "пробуждении")],
 )
 def test_description_is_human_readable(interval: str, expected: str) -> None:
     assert expected in Schedule(interval=interval).describe()
+
+
+def test_daily_schedule_fires_every_hour_and_at_login() -> None:
+    """Hourly so that launchd replays the firing missed during sleep on wake; at login so
+    that a Mac which was shut down does not wait for the next hour."""
+    plist = build_plist(Schedule(interval=DAILY), program=PROGRAM)
+
+    assert plist["StartCalendarInterval"] == {"Minute": 0}
+    assert plist["RunAtLoad"] is True
+
+
+def test_daily_schedule_syncs_once_a_day() -> None:
+    plist = build_plist(Schedule(interval=DAILY), program=PROGRAM)
+
+    assert plist["ProgramArguments"] == [PROGRAM, "sync", "--notify", "--once-a-day"]
+
+
+def test_weekly_schedule_keeps_plain_sync() -> None:
+    plist = build_plist(Schedule(interval=WEEKLY), program=PROGRAM)
+
+    assert "--once-a-day" not in plist["ProgramArguments"]
+    assert plist["RunAtLoad"] is False

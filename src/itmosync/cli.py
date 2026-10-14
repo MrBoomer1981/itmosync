@@ -24,14 +24,15 @@ from itmosync.config import DEFAULT_CONFIG_PATH, load_config, render_config, wri
 from itmosync.errors import CalendarNotFoundError, ConfigError, ItmosyncError
 from itmosync.ical.icloud import ICloudCalendar, OwnedEvent
 from itmosync.itmo.auth import Authenticator, SecretStore, normalize_refresh_token
-from itmosync.itmo.client import ItmoClient
+from itmosync.itmo.client import ItmoClient, wait_for_network
 from itmosync.itmo.schedule import parse_schedule
-from itmosync.launchagent import MONTHLY, WEEKLY, Schedule
+from itmosync.launchagent import DAILY, MONTHLY, WEEKLY, Schedule
 from itmosync.launchagent import install as install_agent
 from itmosync.launchagent import status as agent_status
 from itmosync.launchagent import uninstall as uninstall_agent
 from itmosync.logging import setup_logging
 from itmosync.report import notify, notify_failure, render
+from itmosync.runstamp import last_synced, mark_synced, synced_on
 from itmosync.sync import apply_plan, build_plan, check_guards
 
 app = typer.Typer(
@@ -336,6 +337,13 @@ def sync(
         typer.Option("--notify/--no-notify", help="Уведомление macOS о результате."),
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Подробный лог.")] = False,
+    once_a_day: Annotated[
+        bool,
+        typer.Option(
+            "--once-a-day",
+            help="Ничего не делать, если сегодня синхронизация уже прошла; сначала дождаться сети.",
+        ),
+    ] = False,
 ) -> None:
     setup_logging(verbose=verbose)
     config = load_config(config_path)
@@ -347,6 +355,14 @@ def sync(
     span = days if days is not None else config.sync.window_days
     start = datetime.now(config.tz).date()
     end = start + timedelta(days=span - 1)
+
+    if once_a_day:
+        if synced_on(start):
+            console.print(f"Сегодня ({start:%d.%m}) синхронизация уже была — пропускаю.")
+            return
+        # Deliberately outside the try below: no network right after wake is routine, and
+        # the next hourly firing retries it, so it must not raise a failure notification.
+        wait_for_network()
 
     started = time.perf_counter()
     try:
@@ -385,6 +401,8 @@ def sync(
         notify_failure(exc, config)
         raise
 
+    if not dry_run:
+        mark_synced(start)
     render(result, config, console)
     notify(result, config)
 
@@ -401,19 +419,36 @@ def schedule(
     weekly: Annotated[
         bool, typer.Option("--weekly", help="Раз в неделю вместо раза в месяц.")
     ] = False,
-    hour: Annotated[int, typer.Option("--hour", min=0, max=23, help="Час запуска.")] = 9,
+    daily: Annotated[
+        bool,
+        typer.Option("--daily", help="Раз в день, при первом пробуждении Mac."),
+    ] = False,
+    hour: Annotated[
+        int | None, typer.Option("--hour", min=0, max=23, help="Час запуска (по умолчанию 9).")
+    ] = None,
 ) -> None:
     if sum((install, uninstall, show_status)) != 1:
         console.print("Укажите ровно один флаг: --install, --uninstall или --status")
         raise typer.Exit(code=2)
+    if daily and (weekly or hour is not None):
+        console.print(
+            "--daily не сочетается с --weekly и --hour: "
+            "ежедневный запуск привязан к пробуждению Mac, а не к часу."
+        )
+        raise typer.Exit(code=2)
 
     if install:
-        plan = Schedule(interval=WEEKLY if weekly else MONTHLY, hour=hour)
+        interval = DAILY if daily else WEEKLY if weekly else MONTHLY
+        plan = Schedule(interval=interval, hour=9 if hour is None else hour)
         path = install_agent(plan)
         console.print(f"[green]✓[/green] Автозапуск включён: [bold]{plan.describe()}[/bold]")
         console.print(f"[dim]{path}[/dim]")
         console.print("\nЛог прогонов: [bold]~/Library/Logs/itmosync.log[/bold]")
-        if not weekly:
+        if daily:
+            console.print(
+                "\nПервая синхронизация запускается прямо сейчас, если сегодня её ещё не было."
+            )
+        if interval == MONTHLY:
             console.print(
                 "\n[yellow]Учтите:[/yellow] refresh-токен живёт около 30 дней и продлевается "
                 "только прогоном.\nПри месячном интервале он будет иногда протухать раньше "
@@ -436,6 +471,12 @@ def schedule(
     if details:
         for line in details.splitlines():
             console.print(f"    [dim]{line}[/dim]")
+    last = last_synced()
+    console.print(
+        f"  Последняя успешная синхронизация: {last:%d.%m.%Y}"
+        if last
+        else "  Успешных синхронизаций пока не было"
+    )
 
 
 def main() -> None:

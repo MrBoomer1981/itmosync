@@ -81,7 +81,8 @@ itmosync auth       store secrets in the Keychain (--set-token, --set-apple-pass
 itmosync doctor     config, ITMO ID, schedule API and iCloud, as a checklist
 itmosync show       print the schedule as a table; touches no calendar at all
 itmosync sync       the real thing; --dry-run prints the plan and writes nothing
-itmosync schedule   the launchd agent: --install [--weekly] [--hour N], --status, --uninstall
+itmosync schedule   the launchd agent: --install [--daily | --weekly] [--hour N], --status,
+                    --uninstall
 ```
 
 `sync --dry-run` is also the answer to "what changed since last time?" — it reads my.itmo, reads
@@ -176,8 +177,16 @@ no flag for just one of them. Guard 3 cannot be switched off.
   the cycle broken, so the shared retry policy stays in `client.py`.
 - Keycloak **rotates the refresh token on every exchange**, and `Authenticator.refresh()` writes
   the new one back to the Keychain. A run is therefore what keeps the token alive — hence
-  `schedule --install --weekly` over the monthly default, which would land right on the token's
-  ~30-day lifetime.
+  `schedule --install --daily` or `--weekly` over the monthly default, which would land right on
+  the token's ~30-day lifetime.
+- The daily agent is not a wake trigger — launchd has none. It fires every hour on the hour and
+  at login, and relies on launchd replaying a firing missed during sleep on wake. Two pieces make
+  that one sync a day: `runstamp.py` (`~/.local/state/itmosync/last-sync`, written by every
+  successful non-dry `sync`, so a manual run counts too) and `sync --once-a-day`, which checks the
+  stamp *before* touching the network. It then calls `wait_for_network()` outside the
+  notify-on-failure block: no Wi-Fi right after wake is routine and the next hourly firing
+  retries it, so `NetworkUnavailableError` must not notify. Tests never touch the real stamp —
+  an autouse fixture in `conftest.py` redirects `runstamp.STAMP_PATH`.
 - The calendar package is named `ical`, never `calendar` — `calendar` shadows the stdlib module.
 - Every deletion goes through **one** function that checks the UID mask. A second deletion path in
   the code is a bug.

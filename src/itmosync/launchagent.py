@@ -23,6 +23,7 @@ LOG_PATH: Final = Path.home() / "Library" / "Logs" / "itmosync.log"
 
 MONTHLY: Final = "monthly"
 WEEKLY: Final = "weekly"
+DAILY: Final = "daily"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,12 +35,31 @@ class Schedule:
     minute: int = 0
 
     def calendar_interval(self) -> dict[str, int]:
+        if self.interval == DAILY:
+            # Every hour, on the hour. launchd runs a firing missed during sleep on wake,
+            # which is what makes the first wake of the day trigger the sync; the
+            # --once-a-day stamp turns the remaining firings into no-ops.
+            return {"Minute": 0}
         base = {"Hour": self.hour, "Minute": self.minute}
         if self.interval == WEEKLY:
             return {**base, "Weekday": 1}  # Monday
         return {**base, "Day": 1}  # the 1st of each month
 
+    @property
+    def runs_at_load(self) -> bool:
+        """Daily mode also fires on login, so a Mac that was shut down rather than asleep
+        does not wait for the next hour."""
+        return self.interval == DAILY
+
+    def program_arguments(self, program: str) -> list[str]:
+        arguments = [program, "sync", "--notify"]
+        if self.interval == DAILY:
+            arguments.append("--once-a-day")
+        return arguments
+
     def describe(self) -> str:
+        if self.interval == DAILY:
+            return "раз в день, при первом пробуждении Mac"
         when = f"{self.hour:02d}:{self.minute:02d}"
         if self.interval == WEEKLY:
             return f"по понедельникам в {when}"
@@ -64,9 +84,9 @@ def build_plist(schedule: Schedule, program: str | None = None) -> dict[str, Any
     """The launchd job definition."""
     return {
         "Label": LABEL,
-        "ProgramArguments": [program or executable_path(), "sync", "--notify"],
+        "ProgramArguments": schedule.program_arguments(program or executable_path()),
         "StartCalendarInterval": schedule.calendar_interval(),
-        "RunAtLoad": False,
+        "RunAtLoad": schedule.runs_at_load,
         "StandardOutPath": str(LOG_PATH),
         "StandardErrorPath": str(LOG_PATH),
         "ProcessType": "Background",

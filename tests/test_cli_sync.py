@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from itmosync import cli
 from itmosync.config import render_config, write_config
-from itmosync.errors import CalendarNotFoundError
+from itmosync.errors import CalendarError, CalendarNotFoundError, NetworkUnavailableError
 from itmosync.ical.icloud import OwnedEvent
 
 runner = CliRunner()
@@ -92,6 +92,7 @@ def wired(
     monkeypatch.setattr(cli, "ItmoClient", StubClient)
     monkeypatch.setattr(cli, "SecretStore", StubStore)
     monkeypatch.setattr(cli, "ICloudCalendar", StubCalendar)
+    monkeypatch.setattr(cli, "wait_for_network", lambda: None)
 
     config_path = tmp_path / "config.toml"
     write_config(config_path, render_config(apple_id="s@e.com", calendar_name="ИТМО · Пары"))
@@ -131,3 +132,98 @@ def test_real_run_asks_for_the_calendar_to_be_created(wired: Path) -> None:
     assert result.exit_code == 0, result.output
     assert StubCalendar.instances[0].opened_with is True
     assert StubCalendar.instances[0].writes.count("create") == 20
+
+
+TODAY = dt.date(2026, 9, 7)  # FrozenDatetime's date
+
+
+def test_a_real_run_records_the_day(wired: Path, stamp_path: Path) -> None:
+    result = runner.invoke(cli.app, ["sync", "--config", str(wired), "--days", "40"])
+
+    assert result.exit_code == 0, result.output
+    assert stamp_path.read_text("utf-8").strip() == TODAY.isoformat()
+
+
+def test_a_dry_run_does_not_record_the_day(wired: Path, stamp_path: Path) -> None:
+    result = runner.invoke(cli.app, ["sync", "--dry-run", "--config", str(wired), "--days", "40"])
+
+    assert result.exit_code == 0, result.output
+    assert not stamp_path.exists()
+
+
+def test_a_failed_run_does_not_record_the_day(
+    wired: Path, stamp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class BrokenCalendar(StubCalendar):
+        def connect(self) -> None:
+            raise CalendarError("Не удалось подключиться к iCloud: timeout")
+
+    monkeypatch.setattr(cli, "ICloudCalendar", BrokenCalendar)
+
+    result = runner.invoke(cli.app, ["sync", "--once-a-day", "--config", str(wired)])
+
+    # cli.app is invoked without main(), so the error surfaces as the exception itself.
+    assert isinstance(result.exception, CalendarError)
+    assert not stamp_path.exists()
+
+
+def test_once_a_day_skips_when_already_synced_today(
+    wired: Path, stamp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stamp_path.parent.mkdir(parents=True)
+    stamp_path.write_text(TODAY.isoformat(), "utf-8")
+    waited: list[bool] = []
+    monkeypatch.setattr(cli, "wait_for_network", lambda: waited.append(True))
+
+    result = runner.invoke(cli.app, ["sync", "--once-a-day", "--config", str(wired)])
+
+    assert result.exit_code == 0, result.output
+    assert "уже была" in result.output
+    # The skip happens before anything touches the network.
+    assert waited == []
+    assert StubCalendar.instances == []
+
+
+def test_once_a_day_syncs_on_a_new_day(wired: Path, stamp_path: Path) -> None:
+    stamp_path.parent.mkdir(parents=True)
+    stamp_path.write_text((TODAY - dt.timedelta(days=1)).isoformat(), "utf-8")
+
+    result = runner.invoke(
+        cli.app, ["sync", "--once-a-day", "--config", str(wired), "--days", "40"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert StubCalendar.instances[0].writes.count("create") == 20
+    assert stamp_path.read_text("utf-8").strip() == TODAY.isoformat()
+
+
+def test_no_network_after_wake_fails_quietly(
+    wired: Path, stamp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Wi-Fi right after wake is routine; the next hourly firing retries it."""
+
+    def offline() -> None:
+        raise NetworkUnavailableError("Сети нет: my.itmo не ответил за 90 с.")
+
+    notified: list[Exception] = []
+    monkeypatch.setattr(cli, "wait_for_network", offline)
+    monkeypatch.setattr(cli, "notify_failure", lambda exc, config: notified.append(exc))
+
+    result = runner.invoke(cli.app, ["sync", "--once-a-day", "--notify", "--config", str(wired)])
+
+    assert isinstance(result.exception, NetworkUnavailableError)
+    assert notified == []
+    assert StubCalendar.instances == []
+    assert not stamp_path.exists()
+
+
+@pytest.mark.parametrize("extra", [["--weekly"], ["--hour", "7"]])
+def test_daily_rejects_a_fixed_time(extra: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    installed: list[object] = []
+    monkeypatch.setattr(cli, "install_agent", installed.append)
+
+    result = runner.invoke(cli.app, ["schedule", "--install", "--daily", *extra])
+
+    assert result.exit_code == 2
+    assert "--daily не сочетается" in result.output
+    assert installed == []
