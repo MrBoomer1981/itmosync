@@ -4,19 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-All eight steps of §14 of the spec are implemented and committed, and three features that
-post-date the spec were added on top: the token bookmarklet (`auth --bookmarklet`), macOS
-notifications (`report.notify`) and unattended runs through launchd (`schedule --install`).
-The tool runs and the tree is green: `pytest`, `ruff` and `mypy --strict` all pass.
+All eight steps of §14 of the spec are implemented and committed. Four features post-date the
+spec: the token bookmarklet (`auth --bookmarklet`), macOS notifications (`report.notify`),
+unattended runs through launchd (`schedule --install`) and the daily mode on top of it
+(`--daily`, `sync --once-a-day`). The tree is green: `pytest`, `ruff` and `mypy --strict` pass.
 
-The live acceptance pass from §15 is partly done. Verified against the user's real iCloud
-calendar on 2026-09-15: `sync --dry-run` produced a correct plan and wrote nothing, a real
-`sync` applied it (87 events in the window, 5 created, 5 deleted), and the run right after it
-reported zero changes — idempotency holds on live data, not only in `test_idempotent_second_run`.
+Verified live:
+
+- 2026-09-15, against the user's real iCloud calendar: `sync --dry-run` produced a correct plan
+  and wrote nothing, a real `sync` applied it (87 events in the window, 5 created, 5 deleted),
+  and the run right after it reported zero changes — idempotency holds on live data, not only in
+  `test_idempotent_second_run`.
+- Between 2026-09-28 and 2026-10-12 a launchd run hit a dead refresh token and logged the
+  `TokenExpiredError` instructions, not a traceback.
+- The daily agent, installed 2026-10-14, synced at install and then skipped hourly. Its
+  2026-10-15 sync ran at 00:00, so a sync on the first wake after a night asleep is still
+  unconfirmed.
+- 2026-10-17: the agent, silently broken for two days by the repo move, synced again from a
+  standalone copy and was then reinstalled behind the shell wrapper (see Toolchain). A real sync
+  through the wrapper is still to come; its fallback notification was triggered by hand with a
+  failing stand-in program and did show up on screen.
 
 Still unverified from §15: `doctor` on a clean machine, the events showing up on the phone, a
-hand-made event in the same calendar surviving three runs, and the message shown for a revoked
-token.
+hand-made event in the same calendar surviving three runs, and a deliberately revoked token.
 
 `itmosync-tz.md` is the source of truth for scope, naming and architecture. Where it
 disagrees with `docs/api-notes.md` about the API, **api-notes wins** and the spec gets
@@ -35,7 +45,7 @@ Three findings from reconnaissance that are easy to get wrong:
 
 `itmosync` — a macOS CLI that pulls the user's personal class schedule from the internal
 my.itmo API and mirrors it into a dedicated iCloud calendar over CalDAV. Run by hand or from a
-weekly launchd agent, over a rolling 28-day window.
+launchd agent (daily on first wake, weekly or monthly), over a rolling 28-day window.
 
 The whole project exists to be **idempotent**: a repeated run must produce zero changes, and a
 changed lesson must *update* the existing event rather than delete-and-recreate it (recreation
@@ -43,9 +53,8 @@ shows up as "event deleted" on the user's phone and resets notification history)
 
 ## Toolchain
 
-Python 3.12 managed by `uv`. The machine's default `python3` is 3.14 and 3.12 is not installed,
-so pin it explicitly: `uv python install 3.12` and `requires-python = ">=3.12,<3.13"` in
-`pyproject.toml`.
+Python 3.12 managed by `uv`, pinned by `requires-python = ">=3.12,<3.13"`. The machine's own
+`python3` and the `pytest` on `PATH` are 3.14 — never call them bare; go through `uv run`.
 
 ```bash
 uv sync                              # install deps + the `dev` dependency group
@@ -55,7 +64,7 @@ uv run pytest --cov=itmosync.sync --cov=itmosync.ical.mapper --cov-report=term-m
 uv run ruff check src tests
 uv run ruff format src tests
 uv run mypy --strict src             # must be clean on all of src/
-uv run itmosync <command>            # the CLI itself
+uv run itmosync <command>            # the CLI itself, straight from the working tree
 ```
 
 `ruff` and `mypy --strict` passing on the entire `src/` is a hard acceptance criterion, not a
@@ -64,7 +73,7 @@ nice-to-have.
 **Scope the coverage run to the two core modules, as above.** `fail_under = 90` in
 `pyproject.toml` applies to whatever is being measured, while the 90% floor from the spec is
 defined only for `sync.py` and `ical/mapper.py`. Measuring the whole package
-(`--cov=src/itmosync`) therefore *fails* at ~68% even when nothing is wrong; the scoped run
+(`--cov=src/itmosync`) therefore *fails* at ~70% even when nothing is wrong; the scoped run
 reports ~99%.
 
 Moving the repo leaves stale absolute shebangs in `.venv/bin`: `uv run mypy` then fails to
@@ -81,18 +90,27 @@ therefore refuses an editable install (PEP 610 `direct_url.json`), which also ca
 `schedule --install` run under `uv run`, where `shutil.which` finds `.venv/bin/itmosync` first.
 The plist needs an absolute path regardless: launchd hands a job a minimal environment.
 
+To see what the agent did: `~/Library/Logs/itmosync.log` (its stdout and stderr),
+`itmosync schedule --status`, and `launchctl print gui/$(id -u)/ru.itmosync.sync` for the run
+count and the last exit code. The plist is `~/Library/LaunchAgents/ru.itmosync.sync.plist`; it
+runs `sync --notify`, plus `--once-a-day` in daily mode.
+
 ## The commands
 
 ```
-itmosync init       write ~/.config/itmosync/config.toml
-itmosync auth       store secrets in the Keychain (--set-token, --set-apple-password,
-                    --bookmarklet, --from-clipboard)
+itmosync init       write ~/.config/itmosync/config.toml (--force overwrites it)
+itmosync auth       store secrets in the Keychain: exactly one of --set-token,
+                    --set-apple-password, --bookmarklet; --from-clipboard goes with --set-token
 itmosync doctor     config, ITMO ID, schedule API and iCloud, as a checklist
-itmosync show       print the schedule as a table; touches no calendar at all
-itmosync sync       the real thing; --dry-run prints the plan and writes nothing
-itmosync schedule   the launchd agent: --install [--daily | --weekly] [--hour N], --status,
-                    --uninstall
+itmosync show       the schedule as a table (--week | --days N); touches no calendar at all
+itmosync sync       the real thing: --dry-run, --days N, --force, --notify/--no-notify,
+                    --once-a-day
+itmosync schedule   the launchd agent: --install [--weekly] [--hour N] | --install --daily |
+                    --status | --uninstall
 ```
+
+`--config PATH` works for `init`, `doctor`, `show` and `sync`; `-v/--verbose` for `doctor`,
+`show` and `sync`. `--daily` refuses `--weekly` and `--hour`.
 
 `sync --dry-run` is also the answer to "what changed since last time?" — it reads my.itmo, reads
 the calendar, diffs them and prints what it *would* do.
@@ -102,7 +120,8 @@ the calendar, diffs them and prints what it *would* do.
 Data flows in one direction and each layer knows nothing about the next:
 
 ```
-itmo/auth.py     refresh token -> access token (Keychain in, nothing out)
+itmo/auth.py     refresh token (Keychain) -> access token (memory only); the rotated
+                 refresh token goes back into the Keychain
 itmo/client.py   the ONLY module containing my.itmo URLs; raw HTTP + the shared retry policy
 itmo/schedule.py raw JSON -> validated pydantic -> list[Lesson]
 models.py        Lesson (frozen dataclass), LessonType, normalize_subject
@@ -114,17 +133,20 @@ launchagent.py   the launchd plist and its shell wrapper: install / uninstall / 
 cli.py           typer commands: parse args, call, print. No logic.
 ```
 
-Three modules sit beside that pipeline and are used by every layer:
+Beside that pipeline — the first three used by every layer, `runstamp.py` only by `cli.py`:
 
 ```
 errors.py        the ItmosyncError hierarchy; each class carries its exit code as `exit_code`
 config.py        pydantic models for config.toml, load_config / render_config
 logging.py       setup_logging + SecretMaskingFilter, which masks secrets in every record
+runstamp.py      the date of the last successful sync, which `--once-a-day` checks
 ```
 
-`cli.py` turns an exception into a process exit code in exactly one place, by reading
-`exc.exit_code`. A new exit code therefore means a new exception class in `errors.py`, never a
-literal `SystemExit(n)` in a command.
+Errors become exit codes in one place: `main()` in `cli.py` reads `exc.exit_code`. A new kind
+of failure therefore means a new exception class in `errors.py`, not a literal code in a
+command. The only literal codes are usage errors — `typer.Exit(code=2)` for a wrong combination
+of flags or an empty Apple password — and `doctor`, which exits with the `exit_code` of its
+first failed check.
 
 `sync.py` must not know how the report is rendered — a future Telegram bot is explicitly out of
 scope but must not require rewriting the engine.
@@ -176,18 +198,22 @@ no flag for just one of them. Guard 3 cannot be switched off.
 ## Invariants
 
 - my.itmo URLs live **only** in `itmo/client.py`. Not one address string anywhere else. The
-  `id.itmo.ru` constant in `itmo/auth.py` is a **deliberate exception**, not an oversight: the
-  invariant is about my.itmo, and ITMO ID is a separate Keycloak host. Leave it where it is.
-  The second deliberate exception is `https://my.itmo.ru` in `errors.py`: it is text in the
-  `TokenExpiredError` instructions telling the user which page to open, not an address the code
-  requests.
+  exceptions are deliberate, not oversights. The `id.itmo.ru` token endpoint in `itmo/auth.py`
+  stays where it is: ITMO ID is a separate Keycloak host, and the invariant is about my.itmo.
+  And `my.itmo.ru` appears as text telling the user which page to open — in the
+  `TokenExpiredError` instructions in `errors.py` and in the bookmarklet and its instructions in
+  `cli.py` — never as an address the code requests.
 - Import direction inside `itmo/`: `auth.py` imports `request_with_retries` from `client.py` at
   runtime, and `client.py` imports `Authenticator` only under `TYPE_CHECKING`. That is what keeps
   the cycle broken, so the shared retry policy stays in `client.py`.
 - Keycloak **rotates the refresh token on every exchange**, and `Authenticator.refresh()` writes
   the new one back to the Keychain. A run is therefore what keeps the token alive — hence
   `schedule --install --daily` or `--weekly` over the monthly default, which would land right on
-  the token's ~30-day lifetime.
+  the token's ~30-day lifetime. Every live command exchanges it: `doctor`, `show`, `sync`
+  (`--dry-run` included) and `auth --set-token`. There is no locking, so two runs at once fight
+  over the token and one of them fails with `TokenExpiredError`; the daily agent fires on the
+  hour, so don't start a live command at :00. A my.itmo session in a browser competes for the
+  same token too — see "Refresh exchange" in `docs/api-notes.md`.
 - The daily agent is not a wake trigger — launchd has none. It fires every hour on the hour and
   at login, and relies on launchd replaying a firing missed during sleep on wake. Two pieces make
   that one sync a day: `runstamp.py` (`~/.local/state/itmosync/last-sync`, written by every
@@ -222,9 +248,29 @@ no flag for just one of them. Guard 3 cannot be switched off.
 - Test fixtures must never contain real names, ISU numbers or group numbers.
 - `ScheduleSchemaError` must name the offending field and show the surrounding raw JSON — otherwise
   a changed upstream API is undebuggable.
-- HTTP: 15 s timeout, 3 retries with exponential backoff on 5xx and network errors, no retries on 4xx.
-- Exit codes: `0` ok · `2` config · `3` auth · `4` schedule API · `5` calendar · `6` safety guard ·
-  `1` other.
+- HTTP: 15 s timeout, 3 attempts (`MAX_ATTEMPTS`, i.e. two retries) with exponential backoff on
+  5xx and network errors, none on 4xx. A schedule request answered with 401 exchanges a fresh
+  access token and is repeated exactly once.
+- Exit codes: `0` ok, including a `--once-a-day` run that skips because today is already synced ·
+  `2` config, or an invalid combination of flags · `3` auth · `4` schedule API, including no
+  network under `--once-a-day` (deliberately without a notification) · `5` calendar · `6` safety
+  guard · `1` other, which in practice means a crash.
+
+## Tests
+
+The key test of the project is `test_idempotent_second_run`: two runs over identical data, the
+second producing an empty plan. Nothing in the suite reaches the network, the Keychain or launchd:
+
+- CalDAV: `tests/fakes.py::FakeCalendar`, an in-memory backend with the same interface.
+- HTTP: `respx`, with `time.sleep` patched out of the retry loop.
+- CLI: `test_cli_*.py` swap the names bound in `itmosync.cli` — `Authenticator`, `ItmoClient`,
+  `SecretStore`, `ICloudCalendar`, `wait_for_network`, and `datetime`, which the `wired` fixture
+  freezes to 2026-09-07, the week of `tests/fixtures/schedule_sample.json`. Keep `cli.py`
+  importing these names directly, or the stubs stop reaching it.
+- `runner.invoke(cli.app, …)` bypasses `main()`, so an `ItmosyncError` arrives as
+  `result.exception`, not as its exit code.
+- launchd: the plist is checked as data and `launchctl` is never called; the wrapper is run by a
+  real `/bin/sh` against a stand-in program and a stand-in `osascript`.
 
 ## Language
 
@@ -257,9 +303,5 @@ are the natural commit-sized units.
 Every §14 step got exactly one commit, and new work keeps that shape: one self-contained change
 per commit, an English message, and the tree green (`ruff`, `mypy --strict`, `pytest`) before the
 commit is made.
-
-The key test of the project is `test_idempotent_second_run`: two runs over identical data, the
-second producing an empty plan. CalDAV is never hit in tests — `tests/fakes.py` provides an
-in-memory backend with the same interface.
 
 The first run against a live calendar is `--dry-run` only.
