@@ -17,13 +17,12 @@ Verified live:
   `test_idempotent_second_run`.
 - Between 2026-09-28 and 2026-10-12 a launchd run hit a dead refresh token and logged the
   `TokenExpiredError` instructions, not a traceback.
-- The daily agent, installed 2026-10-14, synced at install and then skipped hourly. Its
-  2026-10-15 sync ran at 00:00, so a sync on the first wake after a night asleep is still
-  unconfirmed.
+- The daily agent, installed 2026-10-14, synced at install and then skipped hourly.
 - 2026-10-17: the agent, silently broken for two days by the repo move, synced again from a
-  standalone copy and was then reinstalled behind the shell wrapper (see Toolchain). A real sync
-  through the wrapper is still to come; its fallback notification was triggered by hand with a
-  failing stand-in program and did show up on screen.
+  standalone copy and was then reinstalled behind the shell wrapper (see Toolchain). Its
+  fallback notification, triggered by hand with a failing stand-in program, showed up on screen.
+- 2026-10-18: the Mac slept through the 00:00 firing and launchd ran it on wake at 00:01:56 —
+  the replay the daily mode rests on. That sync went through the wrapper: 6 created, exit 0.
 
 Still unverified from §15: `doctor` on a clean machine, the events showing up on the phone, a
 hand-made event in the same calendar surviving three runs, and a deliberately revoked token.
