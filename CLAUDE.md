@@ -67,10 +67,19 @@ defined only for `sync.py` and `ical/mapper.py`. Measuring the whole package
 (`--cov=src/itmosync`) therefore *fails* at ~68% even when nothing is wrong; the scoped run
 reports ~99%.
 
-For anything involving launchd, use the installed console script rather than `uv run`:
-`uv tool install --editable .` puts `itmosync` in `~/.local/bin`. `launchagent.py` resolves the
-program through `shutil.which("itmosync")`, and launchd hands a job a minimal environment in
-which a bare command name would not resolve at all.
+Moving the repo leaves stale absolute shebangs in `.venv/bin`: `uv run mypy` then fails to
+spawn, and `uv run pytest` silently falls through to the Python 3.14 pytest on `PATH` and dies
+in collection. `uv sync --reinstall` fixes it.
+
+The launchd agent runs a **standalone** install: `uv tool install .` puts `itmosync` in
+`~/.local/bin` (a symlink into `~/.local/share/uv/tools/itmosync`), and
+`uv tool install --reinstall .` refreshes it after a change — edits are live under `uv run`,
+not in the installed copy. Never `--editable` for the agent: an editable install pins the
+repo's absolute path, and when the repo moved from `~/Creat/Calendar` on 2026-10-15 every hourly
+run died on `import itmosync` for two days without a single notification. `executable_path()`
+therefore refuses an editable install (PEP 610 `direct_url.json`), which also catches
+`schedule --install` run under `uv run`, where `shutil.which` finds `.venv/bin/itmosync` first.
+The plist needs an absolute path regardless: launchd hands a job a minimal environment.
 
 ## The commands
 
@@ -101,7 +110,7 @@ ical/mapper.py   Lesson -> VEVENT (pure; no network)
 ical/icloud.py   the CalendarBackend protocol + the real CalDAV implementation
 sync.py          the diff engine: desired vs existing -> SyncPlan -> SyncResult
 report.py        SyncResult -> rich output, and macOS notifications through osascript
-launchagent.py   the launchd plist: install / uninstall / status
+launchagent.py   the launchd plist and its shell wrapper: install / uninstall / status
 cli.py           typer commands: parse args, call, print. No logic.
 ```
 
@@ -187,6 +196,13 @@ no flag for just one of them. Guard 3 cannot be switched off.
   notify-on-failure block: no Wi-Fi right after wake is routine and the next hourly firing
   retries it, so `NetworkUnavailableError` must not notify. Tests never touch the real stamp —
   an autouse fixture in `conftest.py` redirects `runstamp.STAMP_PATH`.
+- launchd runs itmosync through a `/bin/sh -c` wrapper (`launchagent.wrapper_script()`). It
+  stays quiet on `QUIET_EXIT_CODES` — 0, and 3–6, after which itmosync has notified itself (4
+  under `--once-a-day` may also be the deliberately silent no-network) — and notifies on its own
+  for everything else: 1 (a crash, including a failed `import itmosync`), 2 (a config `sync`
+  could not read before it knew whether to notify), 126/127 (the binary did not start). The
+  tuple is built from the exception classes; a new exit code that itmosync reports itself
+  belongs in it, or the user gets two notifications for one failure.
 - The calendar package is named `ical`, never `calendar` — `calendar` shadows the stdlib module.
 - Every deletion goes through **one** function that checks the UID mask. A second deletion path in
   the code is a bug.

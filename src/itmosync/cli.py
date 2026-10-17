@@ -444,6 +444,10 @@ def schedule(
         console.print(f"[green]✓[/green] Автозапуск включён: [bold]{plan.describe()}[/bold]")
         console.print(f"[dim]{path}[/dim]")
         console.print("\nЛог прогонов: [bold]~/Library/Logs/itmosync.log[/bold]")
+        console.print(
+            "[dim]Агент запускает установленную копию, а не папку проекта. "
+            "После правок в коде обновите её: uv tool install --reinstall .[/dim]"
+        )
         if daily:
             console.print(
                 "\nПервая синхронизация запускается прямо сейчас, если сегодня её ещё не было."
